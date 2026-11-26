@@ -59,7 +59,7 @@ def _read(now, witness, journal=([], None)):
          patch("utils.message_listener.get_listener_status", return_value={}), \
          patch("utils.inbox_legs.load_sections", return_value=None), \
          patch.object(dm_ack_witness, "get_witness", return_value=witness), \
-         patch("utils.box_truth_rx.read_dm_journal", return_value=journal) as jr:
+         patch("utils.dm_journal_cache.DmJournalCache.read", return_value=journal) as jr:
         out = inbox_api.read_inbox()
     msgs = {m["id"]: m for t in out["threads"] for m in t["messages"]}
     return out, msgs, jr
@@ -263,3 +263,56 @@ class TestPage:
     def test_every_state_has_a_style(self):
         for st in ROW_STATES:
             assert f".dl-{st}{{" in self.PAGE, st
+
+
+class TestReviewR1Inbox:
+    """code-review r1 findings 1 + 10 at the inbox seam -- red on f9a23a48."""
+
+    def test_f1_the_inbox_reads_the_journal_through_the_one_cache(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        calls = []
+
+        class Cache:
+            def read(self, runner, *, since, now):
+                calls.append(since)
+                return [], None
+        with patch("utils.dm_journal_cache.get_dm_journal_cache", return_value=Cache()), \
+                patch.object(inbox_api.time, "time", return_value=t + 5), \
+                patch("utils.message_listener.get_listener_status", return_value={}), \
+                patch("utils.inbox_legs.load_sections", return_value=None), \
+                patch.object(dm_ack_witness, "get_witness", return_value=StubWitness(since=t - 60)):
+            inbox_api.read_inbox()
+        assert len(calls) == 1 and calls[0] <= t
+
+    def test_f10_destination_nak_upgrades_a_kept_relay_nak(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        _read(t + 5, StubWitness(since=t - 60, replies=[RoutingReply(t + 4, 0xD8, PID, "NO_ROUTE")]))
+        _read(t + 30, StubWitness(since=t - 60, replies=[RoutingReply(t + 24, P5, PID, "PKI_FAILED")]))
+        k = messaging_mod.kept_dm([(mid, PID)])[0][mid]
+        assert k["said_by"] == "the destination" and k["reason"] == "PKI_FAILED"
+
+    def test_f10_sent_n_survives_being_kept(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        _read(t + 5, StubWitness(since=t - 60, tx={PID: 3},
+                                 replies=[RoutingReply(t + 4, P5, PID, "NONE")]))
+        _, msgs, _ = _read(t + 999, StubWitness(since=None, why="restarted"))
+        assert msgs[mid]["delivery"]["sent_n"] == 3
+
+    def test_f10_store_migrates_a_dm_kept_without_sent_n(self, tmp_db):
+        import sqlite3
+        messaging_mod._init_db().close()
+        c = sqlite3.connect(tmp_db)
+        c.execute("DROP TABLE dm_kept")
+        c.execute("CREATE TABLE dm_kept (message_id INTEGER NOT NULL, packet_id INTEGER NOT NULL, "
+                  "state TEXT NOT NULL, detail TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', "
+                  "said_by TEXT NOT NULL DEFAULT '', latency_s REAL, kept_at REAL NOT NULL, "
+                  "PRIMARY KEY (message_id, packet_id))")
+        c.commit()
+        c.close()
+        mid = _dm()
+        messaging_mod.keep_dm([(mid, PID, {"state": ROW_DELIVERED, "detail": "d",
+                                           "latency_s": 1.0, "sent_n": 2})])
+        assert messaging_mod.kept_dm([(mid, PID)])[0][mid]["sent_n"] == 2

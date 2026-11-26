@@ -115,7 +115,7 @@ def _schema_is_current(conn) -> bool:
         conn.execute("SELECT message_id, packet_id, alias, state, reason, rx_ts, "
                      "skewed, kept_at FROM heard_kept LIMIT 0")
         conn.execute("SELECT message_id, packet_id, state, detail, reason, said_by, "
-                     "latency_s, kept_at FROM dm_kept LIMIT 0")
+                     "latency_s, sent_n, kept_at FROM dm_kept LIMIT 0")
     except sqlite3.OperationalError:
         return False
     return True
@@ -267,8 +267,13 @@ def _init_db() -> sqlite3.Connection:
                          "message_id INTEGER NOT NULL, packet_id INTEGER NOT NULL, "
                          "state TEXT NOT NULL, detail TEXT NOT NULL, "
                          "reason TEXT NOT NULL DEFAULT '', said_by TEXT NOT NULL DEFAULT '', "
-                         "latency_s REAL, kept_at REAL NOT NULL, "
+                         "latency_s REAL, sent_n INTEGER NOT NULL DEFAULT 0, "
+                         "kept_at REAL NOT NULL, "
                          "PRIMARY KEY (message_id, packet_id))")
+            # r1 F10: a dm_kept created before sent_n (unreleased shape)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(dm_kept)")}
+            if "sent_n" not in cols:
+                conn.execute("ALTER TABLE dm_kept ADD COLUMN sent_n INTEGER NOT NULL DEFAULT 0")
             conn.commit()
         except Exception:
             conn.close()  # never leak the fd on a failed migration (#73)
@@ -943,6 +948,11 @@ def _dm_final_states():
     return (ROW_DELIVERED, ROW_FAILED)
 
 
+def _dm_terminal_said_by():
+    from utils.dm_delivery import TERMINAL_SAID_BY
+    return TERMINAL_SAID_BY
+
+
 def _dm_row_ok(state, detail, reason, said_by, latency, finals) -> bool:
     """THE one validity rule for a dm_kept row (writer refuses, reader skips)."""
     return (state in finals and isinstance(detail, str) and bool(detail)
@@ -966,20 +976,30 @@ def keep_dm(items: List[tuple], now: Optional[float] = None) -> None:
                v.get("said_by") or "", v.get("latency_s"))
         if not _dm_row_ok(*row, finals):
             raise ValueError(f"dm_kept refuses verdict state {v.get('state')!r}")
-        rows.append((mid, pid, *row))
+        n = v.get("sent_n") or 0
+        rows.append((mid, pid, *row,
+                     n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else 0))
     if not rows:
         return
     stamp = time.time() if now is None else now
+    t1, t2 = _dm_terminal_said_by()
     conn = _init_db()
     try:
+        # Rank: delivered > a failure the destination / our radio said >
+        # a relay's failure. Never a downgrade (r1 F10: a relay NAK was
+        # never upgraded to the destination's own NAK).
         conn.executemany(
             "INSERT INTO dm_kept (message_id, packet_id, state, detail, reason, said_by, "
-            "latency_s, kept_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "latency_s, sent_n, kept_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (message_id, packet_id) DO UPDATE SET state = excluded.state, "
             "detail = excluded.detail, reason = excluded.reason, said_by = excluded.said_by, "
-            "latency_s = excluded.latency_s, kept_at = excluded.kept_at "
-            "WHERE excluded.state = ? AND dm_kept.state != ?",
-            [(*r, stamp, finals[0], finals[0]) for r in rows])
+            "latency_s = excluded.latency_s, sent_n = MAX(excluded.sent_n, dm_kept.sent_n), "
+            "kept_at = excluded.kept_at "
+            "WHERE (excluded.state = ? AND dm_kept.state != ?) "
+            "OR (excluded.state = ? AND excluded.said_by IN (?, ?) "
+            "AND dm_kept.state = ? AND dm_kept.said_by NOT IN (?, ?))",
+            [(*r, stamp, finals[0], finals[0], finals[1], t1, t2, finals[1], t1, t2)
+             for r in rows])
         conn.commit()
     finally:
         conn.close()
@@ -998,7 +1018,8 @@ def kept_dm(sends: List[tuple]) -> "tuple[Dict[int, Dict[str, Any]], int]":
         out: Dict[int, Dict[str, Any]] = {}
         refused = 0
         for mid, pid in sends:
-            r = conn.execute("SELECT state, detail, reason, said_by, latency_s FROM dm_kept "
+            r = conn.execute("SELECT state, detail, reason, said_by, latency_s, sent_n "
+                             "FROM dm_kept "
                              "WHERE message_id = ? AND packet_id = ?", (mid, pid)).fetchone()
             if r is None:
                 continue
@@ -1006,8 +1027,10 @@ def kept_dm(sends: List[tuple]) -> "tuple[Dict[int, Dict[str, Any]], int]":
                               r["latency_s"], finals):
                 refused += 1
                 continue
+            n = r["sent_n"]
             out[mid] = {"state": r["state"], "detail": r["detail"], "reason": r["reason"],
-                        "said_by": r["said_by"], "latency_s": r["latency_s"]}
+                        "said_by": r["said_by"], "latency_s": r["latency_s"],
+                        "sent_n": n if isinstance(n, int) and n >= 0 else 0}
         if refused:
             logger.warning("dm_kept: %d row(s) no writer can have stored were left out",
                            refused)

@@ -40,7 +40,8 @@ RING_CAP = 4000
 TX_CAP = 4000
 #: Counters, closed vocabulary (hfm #7) -- observe before alarm (Q8).
 COUNTERS = ("envelopes", "broadcast", "pki_skipped", "unparseable",
-            "decrypt_failed", "decrypted", "routing")
+            "decrypt_failed", "decrypted", "routing", "routing_unparseable",
+            "other_gateway_copy")
 
 
 class AckWitness:
@@ -87,6 +88,7 @@ class AckWitness:
             to, pid, frm = int(pkt.to), int(pkt.id), int(getattr(pkt, "from"))
             channel = str(se.channel_id)[:32]
             pki = bool(getattr(pkt, "pki_encrypted", False))
+            gateway = str(se.gateway_id)
         except Exception:
             self._bump("unparseable")
             return
@@ -96,10 +98,15 @@ class AckWitness:
             if to == BROADCAST:
                 self._counts["broadcast"] += 1
                 return
-            if pid:
+            # "sent N×" counts only the SENDER's own uplink of its packet
+            # (gateway == from). A bridged/other gateway's copy is the same
+            # transmission heard elsewhere -- r1 F6.
+            if pid and gateway == f"!{frm:08x}":
                 self._tx[pid] = self._tx.pop(pid, 0) + 1
                 while len(self._tx) > TX_CAP:
                     self._tx.popitem(last=False)
+            elif pid:
+                self._counts["other_gateway_copy"] += 1
             if pki:
                 self._counts["pki_skipped"] += 1
                 return
@@ -114,7 +121,12 @@ class AckWitness:
         self._bump("decrypted")
         if not dp.is_routing or not dp.request_id:
             return
-        err = dp.routing_error_name() or "UNPARSEABLE"
+        err = dp.routing_error_name()
+        if err is None:
+            # Never a reply: "UNPARSEABLE" read as a NAK -> a kept "failed"
+            # from a degraded parse (hfm #1, r1 F4). Counted, so a probe sees it.
+            self._bump("routing_unparseable")
+            return
         with self._lock:
             self._counts["routing"] += 1
             self._replies.append(RoutingReply(t, int(dp.from_node),

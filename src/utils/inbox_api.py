@@ -369,7 +369,7 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     witness is said on the row and in ``delivery_error``, never a 503 and
     never an absent field (hfm #1, #9). Returns (witness line, error)."""
     from commands import messaging as store
-    from utils import box_truth_rx, dm_ack_witness, dm_delivery as dd
+    from utils import dm_ack_witness, dm_delivery as dd, dm_journal_cache
     now = time.time()
     errors: List[str] = []
     snap = dm_ack_witness.get_witness().snapshot(now=now)
@@ -388,7 +388,7 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
         k = kept.get(m["id"])
         if k is not None:
             late = k.get("latency_s") is not None and k["latency_s"] > dd.WAITING_S
-            m["delivery"] = {**k, "why": "", "late": late, "sent_n": 0,
+            m["delivery"] = {**k, "why": "", "late": late,
                              "possible_ack": False, "kept": True}
             # Terminal: delivered, or a failure the destination / our radio
             # said. A RELAY's NAK is not the destination's answer: keep
@@ -407,9 +407,11 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     journal: List[Any] = []
     journal_why = None
     if todo:
-        journal, journal_why = box_truth_rx.read_dm_journal(
+        # ONE in-process cache with a cursor: a poll walks only the lines
+        # since the last poll (r1 F1: every poll re-read up to 6 h).
+        journal, journal_why = dm_journal_cache.get_dm_journal_cache().read(
             subprocess.run, since=min(s for _, _, s in todo) - 2, now=now)
-        if journal_why:
+        if journal_why or journal is None:
             errors.append(journal_why)
             journal = []
     keep = []
@@ -417,7 +419,8 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
         v = dd.row_verdict(dd.Send(sent, m["packet_id"], t.get("partner")),
                            snap["replies"], snap["witness"], journal=journal,
                            tx_seen=snap["tx"].get(m["packet_id"], 0), now=now)
-        if "delivery" in m and v.state != dd.ROW_DELIVERED:
+        if "delivery" in m and not (v.state == dd.ROW_DELIVERED or (
+                v.state == dd.ROW_FAILED and v.said_by in dd.TERMINAL_SAID_BY)):
             continue          # a kept relay NAK stands until the destination answers
         d = _verdict_dict(v, kept=False)
         if journal_why and v.state not in dd.ROW_FINAL_STATES:

@@ -36,12 +36,14 @@ TOPIC = "msh/2/e/LongFast/!6201ce25"
 
 
 def _env(*, frm, to, pid, portnum=5, error=0, request_id=0, channel="LongFast",
-         pki=False, key_b64=DEFAULT_KEY_B64):
+         pki=False, key_b64=DEFAULT_KEY_B64, raw_payload=None, gateway="!6201ce25"):
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from meshtastic.protobuf import mesh_pb2, mqtt_pb2
     data = mesh_pb2.Data()
     data.portnum = portnum
-    if portnum == 5:
+    if raw_payload is not None:
+        data.payload = raw_payload
+    elif portnum == 5:
         r = mesh_pb2.Routing()
         r.error_reason = error
         data.payload = r.SerializeToString()
@@ -61,7 +63,7 @@ def _env(*, frm, to, pid, portnum=5, error=0, request_id=0, channel="LongFast",
     se = mqtt_pb2.ServiceEnvelope()
     se.packet.CopyFrom(pkt)
     se.channel_id = channel
-    se.gateway_id = "!6201ce25"
+    se.gateway_id = gateway
     return se.SerializeToString()
 
 
@@ -223,3 +225,25 @@ class TestEndToEnd:
         v = row_verdict(Send(T0, DM_ID, P5), s["replies"], s["witness"],
                         tx_seen=s["tx"].get(DM_ID, 0), now=now)
         assert v.state == ROW_NO_ACK and v.sent_n == 3
+
+
+class TestReviewR1:
+    """code-review r1 findings 4 + 6 -- red on f9a23a48."""
+
+    def test_f4_unparseable_routing_is_counted_never_a_nak(self):
+        w = _live()
+        w.observe(TOPIC, _env(frm=P5, to=ME, pid=0x61, request_id=DM_ID,
+                              raw_payload=b"\xff\xff\xff"), now=T0 + 2)
+        s = w.snapshot(now=T0 + 3)
+        assert s["replies"] == []
+        assert s["counts"]["routing_unparseable"] == 1
+
+    def test_f6_another_gateways_uplink_is_not_a_retransmission(self):
+        """Our radio uplinks its own DM with gateway == from; a bridged
+        copy from another gateway is the same transmission, not a resend."""
+        w = _live()
+        w.observe("msh/2/e/PKI/!6201ce25", _dm(), now=T0)
+        w.observe("msh/2/e/PKI/!5f01371f",
+                  _env(frm=ME, to=P5, pid=DM_ID, portnum=1, pki=True, channel="PKI",
+                       gateway="!5f01371f"), now=T0 + 0.5)
+        assert w.snapshot(now=T0 + 1)["tx"][DM_ID] == 1

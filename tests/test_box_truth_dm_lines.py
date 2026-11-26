@@ -84,7 +84,12 @@ class _Proc:
         self.returncode, self.stdout, self.stderr = rc, out, err
 
 
+CUR = b"-- cursor: s=abc;i=1\n"
+
+
 class TestRead:
+    """read_dm_journal -> (lines | None, cursor, why). Stateless; the map's
+    cache (utils.dm_journal_cache) carries the cursor between reads."""
     NOW = 1795003600.0
 
     def _runner(self, proc=None, exc=None):
@@ -97,20 +102,28 @@ class TestRead:
             return proc
         return run, calls
 
-    def test_good_read_parses_and_is_bounded(self):
+    def test_good_read_parses_bounded_and_returns_the_cursor(self):
         from utils.box_truth_rx import JOURNAL_TIMEOUT_S, read_dm_journal
-        run, calls = self._runner(_Proc(out=(_alloc() + "\n").encode()))
-        lines, why = read_dm_journal(run, since=self.NOW - 120, now=self.NOW)
+        run, calls = self._runner(_Proc(out=(_alloc() + "\n").encode() + CUR))
+        lines, cur, why = read_dm_journal(run, since=self.NOW - 120, now=self.NOW)
         assert why is None and [j.kind for j in lines] == ["alloc_err"]
+        assert cur == "s=abc;i=1"
         argv, kw = calls[0]
-        assert f"--since=@{int(self.NOW - 120)}" in argv
+        assert f"--since=@{int(self.NOW - 120)}" in argv and "--show-cursor" in argv
         assert kw["timeout"] == JOURNAL_TIMEOUT_S
-        assert not any(a.startswith("--after-cursor") for a in argv)
+
+    def test_resume_reads_after_the_cursor_only(self):
+        from utils.box_truth_rx import read_dm_journal
+        run, calls = self._runner(_Proc(out=CUR))
+        lines, cur, why = read_dm_journal(run, since=0, now=self.NOW, cursor="s=old")
+        assert (lines, why) == ([], None)
+        assert "--after-cursor=s=old" in calls[0][0]
+        assert not any(a.startswith("--since") for a in calls[0][0])
 
     def test_empty_read_is_empty_not_unreadable(self):
         from utils.box_truth_rx import read_dm_journal
-        run, _ = self._runner(_Proc(out=b""))
-        assert read_dm_journal(run, since=self.NOW - 60, now=self.NOW) == ([], None)
+        run, _ = self._runner(_Proc(out=CUR))
+        assert read_dm_journal(run, since=self.NOW - 60, now=self.NOW)[::2] == ([], None)
 
     def test_failed_read_is_none_with_why(self):
         import subprocess
@@ -118,11 +131,30 @@ class TestRead:
         for run, _ in (self._runner(_Proc(rc=1, err=b"No journal files")),
                        self._runner(exc=subprocess.TimeoutExpired("journalctl", 8)),
                        self._runner(exc=FileNotFoundError())):
-            lines, why = read_dm_journal(run, since=self.NOW - 60, now=self.NOW)
+            lines, _cur, why = read_dm_journal(run, since=self.NOW - 60, now=self.NOW)
             assert lines is None and why.startswith("journal unreadable")
+
+    def test_r1_f5_no_access_is_unreadable_never_an_empty_read(self):
+        """journalctl exits 0 with NO entries and a hint on stderr when the
+        user cannot read other units' logs (r1 finding 5)."""
+        from utils.box_truth_rx import read_dm_journal
+        hint = (b"Hint: You are currently not seeing messages from other users and the system.\n"
+                b"      Users in groups 'adm', 'systemd-journal' can see all messages.\n")
+        run, calls = self._runner(_Proc(out=b"-- No entries --\n", err=hint))
+        lines, _cur, why = read_dm_journal(run, since=self.NOW - 60, now=self.NOW)
+        assert lines is None and "cannot read" in why
+        assert "-q" not in calls[0][0]          # -q would hide the hint
+
+    def test_resume_without_a_cursor_line_is_unreadable(self):
+        """A resume always prints the cursor (measured, rx_heard); rc 0 with
+        nothing = the unit is gone or access was lost."""
+        from utils.box_truth_rx import read_dm_journal
+        run, _ = self._runner(_Proc(out=b""))
+        lines, _cur, why = read_dm_journal(run, since=0, now=self.NOW, cursor="s=old")
+        assert lines is None and why
 
     def test_window_never_wider_than_the_cap(self):
         from utils.box_truth_rx import DM_READ_MAX_S, read_dm_journal
-        run, calls = self._runner(_Proc())
+        run, calls = self._runner(_Proc(out=CUR))
         read_dm_journal(run, since=0, now=self.NOW)
         assert f"--since=@{int(self.NOW - DM_READ_MAX_S)}" in calls[0][0]

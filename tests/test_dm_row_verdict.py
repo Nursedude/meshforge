@@ -230,3 +230,42 @@ class TestClock:
     def test_small_skew_is_still_waiting(self):
         s = _row(0xAB3C8AC4, t=T0 + 2)
         assert row_verdict(s, [], LIVE, now=T0).state == ROW_WAITING
+
+
+class TestReviewR1:
+    """code-review r1 (2026-11-25) findings 2, 3, 9 -- red on f9a23a48."""
+
+    def test_f2_destination_ack_outranks_any_journal_error(self):
+        s = _row(0xAB3C8AC6)
+        j = [JournalLine(T0 + 20, "alloc_err", packet_id=0xAB3C8AC6, err=39)]
+        v = row_verdict(s, [_ack(3.0, P5, 0xAB3C8AC6)], LIVE, journal=j, now=T0 + 25)
+        assert v.state == ROW_DELIVERED
+
+    @pytest.mark.parametrize("code", [3, 5])   # TIMEOUT, MAX_RETRANSMIT
+    def test_f2_a_retry_give_up_is_never_failed(self, code):
+        """Our radio giving up proves only that IT heard no ack (§4b)."""
+        s = _row(0xAB3C8AC4)
+        j = [JournalLine(T0 + 17, "alloc_err", packet_id=0xAB3C8AC4, err=code)]
+        v = row_verdict(s, [], LIVE, journal=j, tx_seen=3, now=T0 + WAITING_S + 1)
+        assert v.state == ROW_NO_ACK
+        assert "our radio gave up" in v.why
+
+    def test_f3_ack_in_the_ring_counts_after_a_reconnect(self):
+        """A broker blip moves witness.since past the send; the ring still
+        holds the destination's ack -- it must still decide."""
+        s = _row(0xAB3C8AC6)
+        after = Witness(since=T0 + 120, why="")
+        v = row_verdict(s, [_ack(5, P5, 0xAB3C8AC6)], after, now=T0 + 200)
+        assert v.state == ROW_DELIVERED
+
+    def test_f3_ack_in_the_ring_counts_while_the_witness_is_down(self):
+        s = _row(0xAB3C8AC1, dest=FAR)
+        down = Witness(since=None, why="MQTT disconnected (rc=7)")
+        v = row_verdict(s, [_ack(24, FAR, 0xAB3C8AC1, "PKI_UNKNOWN_PUBKEY")], down,
+                        now=T0 + 30)
+        assert v.state == ROW_FAILED and v.said_by == "the destination"
+
+    def test_f9_small_future_skew_never_prints_a_negative_wait(self):
+        s = _row(0xAB3C8AC4, t=T0 + 20)
+        v = row_verdict(s, [], LIVE, now=T0)
+        assert v.state == ROW_WAITING and "-" not in v.detail.split("—")[1].split("s of")[0]

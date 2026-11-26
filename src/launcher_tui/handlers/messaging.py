@@ -486,10 +486,21 @@ def _fetch_inbox(timeout: float = 5.0):
     """(doc, None) from the map daemon that runs the ack witness, or (None,
     why). The witness lives in the MAP's process: the TUI never judges."""
     import json
+    import urllib.error
     import urllib.request
     try:
         with urllib.request.urlopen(INBOX_URL, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8", "replace")), None
+    except urllib.error.HTTPError as e:
+        # The map ANSWERED (e.g. 503 store unavailable): its body is the
+        # truth, not "unreachable" (r1 F7).
+        try:
+            doc = json.loads(e.read().decode("utf-8", "replace"))
+            if isinstance(doc, dict):
+                return doc, None
+        except (OSError, ValueError):
+            pass
+        return {"state": "unavailable", "error": f"HTTP {e.code}"}, None
     except (OSError, ValueError) as e:
         return None, f"{e.__class__.__name__}"
 
@@ -512,7 +523,9 @@ def dm_delivery_lines(fetched) -> list:
     if doc.get("delivery_error"):
         out.append(f"⚠ {doc['delivery_error']}")
     sends = [(m.get("ts") or "", t.get("partner") or "?", m)
-             for t in doc.get("threads") or [] if t.get("kind") == "dm"
+             for t in doc.get("threads") or []
+             # the same scope the map judges (inbox_api._dm_sends) -- r1 F8
+             if t.get("kind") == "dm" and t.get("network") == "meshtastic"
              for m in t.get("messages") or []
              if m.get("direction") == "out"]
     if not sends:

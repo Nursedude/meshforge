@@ -134,6 +134,9 @@ ROW_STATES = (ROW_DELIVERED, ROW_FAILED, ROW_LEFT_UNCONFIRMED, ROW_WAITING,
 #: still flips the row and is marked ``late`` -- the caller counts those as
 #: the witness that this is too short. Re-derive after a soak.
 WAITING_S = 60
+#: Routing.Error codes that mean OUR radio stopped retrying -- never a
+#: delivery failure (r1 F2): TIMEOUT, MAX_RETRANSMIT.
+RETRY_GIVE_UP = (3, 5)
 #: hfm #6: a send stamped further ahead of now than this is a clock step,
 #: never "waiting" (which would then last until the clock caught up).
 CLOCK_SLOP_S = 60
@@ -200,30 +203,38 @@ def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
     dest = _node_num(send.dest)
     sent_n = max(0, int(tx_seen))
 
-    # Our radio's own refusal: journal-only, exact packet id (Q1').
-    for j in journal:
-        if j.kind == "alloc_err" and j.packet_id == send.packet_id and j.err:
+    # The ring decides whenever it holds an answer -- whatever the witness's
+    # coverage now (r1 F3: a broker reconnect moved ``since`` past the send
+    # and threw away the destination's ack already in the ring).
+    (o,) = classify([send], replies)
+    if o.status == DELIVERED:
+        # The destination's own ack outranks ANY journal error (r1 F2).
+        late = o.latency_s is not None and o.latency_s > WAITING_S
+        return RowVerdict(
+            ROW_DELIVERED,
+            f"delivered — acked by the destination in {o.latency_s:.1f} s"
+            + (" (after the waiting window)" if late else ""),
+            latency_s=o.latency_s, late=late, sent_n=sent_n)
+
+    # Our radio's own refusal: journal-only, exact packet id (Q1'). A retry
+    # GIVE-UP is not a refusal: it proves only that OUR radio heard no ack
+    # (§4b: "failed" never comes from a give-up) -- r1 F2.
+    mine = [j for j in journal if j.kind == "alloc_err" and j.packet_id == send.packet_id
+            and j.err]
+    for j in mine:
+        if j.err not in RETRY_GIVE_UP:
             name = routing_error_name(j.err)
             return RowVerdict(ROW_FAILED, f"failed: {name} (said by our radio)",
                               reason=name, said_by="our radio", sent_n=sent_n)
+    gave_up = next((routing_error_name(j.err) for j in mine), None)
 
-    o = None
-    if witness.since is not None and witness.since <= send.t:
-        (o,) = classify([send], replies)
-        if o.status == DELIVERED:
-            late = o.latency_s is not None and o.latency_s > WAITING_S
-            return RowVerdict(
-                ROW_DELIVERED,
-                f"delivered — acked by the destination in {o.latency_s:.1f} s"
-                + (" (after the waiting window)" if late else ""),
-                latency_s=o.latency_s, late=late, sent_n=sent_n)
-        if o.status == FAILED:
-            nak = next(r for r in replies if r.request_id == send.packet_id
-                       and not _is_positive(r.error) and r.t >= send.t - 1)
-            who = ("the destination" if _node_num(nak.sender) == dest
-                   else f"!{_node_num(nak.sender) or 0:08x}")
-            return RowVerdict(ROW_FAILED, f"failed: {o.reason} (said by {who})",
-                              reason=o.reason, said_by=who, sent_n=sent_n)
+    if o.status == FAILED:
+        nak = next(r for r in replies if r.request_id == send.packet_id
+                   and not _is_positive(r.error) and r.t >= send.t - 1)
+        who = ("the destination" if _node_num(nak.sender) == dest
+               else f"!{_node_num(nak.sender) or 0:08x}")
+        return RowVerdict(ROW_FAILED, f"failed: {o.reason} (said by {who})",
+                          reason=o.reason, said_by=who, sent_n=sent_n)
 
     if witness.since is None:
         why = witness.why or "this box cannot see delivery acks"
@@ -233,15 +244,17 @@ def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
         why = "this box's clock went backward since the send (it is stamped in the future)"
     elif now - send.t < WAITING_S:
         return RowVerdict(ROW_WAITING,
-                          f"waiting — {int(now - send.t)} s of {WAITING_S} s"
+                          f"waiting — {max(0, int(now - send.t))} s of {WAITING_S} s"
                           + _sent(sent_n), sent_n=sent_n)
-    elif o is not None and o.status == LEFT_ONLY:
+    elif o.status == LEFT_ONLY:
         return RowVerdict(ROW_LEFT_UNCONFIRMED,
                           "left, not confirmed — acked only by our radio or a "
                           "relay, never the destination" + _sent(sent_n),
                           sent_n=sent_n)
     else:
         why = "window closed"
+    if gave_up:
+        why = f"our radio gave up after retries ({gave_up}); " + why
 
     possible = dest is not None and any(
         j.kind == "routing_from" and j.sender is not None

@@ -412,19 +412,43 @@ def parse_dm_journal(text: str) -> List[JournalLine]:
 DM_READ_MAX_S = 6 * 3600
 
 
-def read_dm_journal(runner: Callable[..., Any], *, since: float, now: float,
-                    unit: str = SOURCE_UNIT, timeout_s: float = JOURNAL_TIMEOUT_S
-                    ) -> Tuple[Optional[List[JournalLine]], Optional[str]]:
-    """THIS box's journal, ``since`` .. now, parsed by ``parse_dm_journal``.
+#: journalctl's own notice when this user cannot read the unit's logs.
+#: MEASURED 2026-11-25 (`sudo -u nobody`, the lab Pi): rc 1 + this hint;
+#: where the user CAN open some journal files it may exit 0 with no
+#: entries -- so the hint is checked whatever the exit code (r1 finding 5).
+_NO_ACCESS_HINT = "not seeing messages from other users"
 
-    (lines, None) on a good read -- ``[]`` means the journal was READ and held
-    nothing for these DMs. (None, why) when it could not be read: unreadable
-    is never empty (hfm #1). No cursor, no state file: a stateless bounded
-    read, so it never touches the rx_heard ring or its single writer."""
-    lo = max(float(since), now - DM_READ_MAX_S)
-    argv = ["journalctl", "-u", unit, "-o", "short-unix", "--no-pager", "-q",
-            f"--since=@{int(lo)}"]
+
+def read_dm_journal(runner: Callable[..., Any], *, since: float, now: float,
+                    cursor: Optional[str] = None, unit: str = SOURCE_UNIT,
+                    timeout_s: float = JOURNAL_TIMEOUT_S
+                    ) -> Tuple[Optional[List[JournalLine]], Optional[str], Optional[str]]:
+    """THIS box's journal -> (lines, cursor, why), parsed by ``parse_dm_journal``.
+
+    With ``cursor``: only lines AFTER it (a resume); else ``since`` .. now,
+    capped at ``DM_READ_MAX_S``. ``lines == []`` = READ and held nothing.
+    ``lines is None`` = could not be read, ``why`` says so -- unreadable is
+    never empty (hfm #1). Stateless: the caller keeps the cursor (the map's
+    ``utils.dm_journal_cache``); the rx_heard ring is never touched. No
+    ``-q``: it would hide journalctl's no-access hint."""
+    argv = ["journalctl", "-u", unit, "-o", "short-unix", "--no-pager", "--show-cursor"]
+    if cursor:
+        argv.append(f"--after-cursor={cursor}")
+    else:
+        argv.append(f"--since=@{int(max(float(since), now - DM_READ_MAX_S))}")
     rc, out, err = _journal(runner, argv, timeout_s)
+    if _NO_ACCESS_HINT in err:
+        return None, None, ("journal unreadable: this user cannot read the "
+                            f"{unit} journal (not in adm / systemd-journal)")
     if rc != 0:
-        return None, f"journal unreadable: {err or f'journalctl exited {rc}'}"
-    return parse_dm_journal(out), None
+        return None, cursor, f"journal unreadable: {err or f'journalctl exited {rc}'}"
+    new_cursor = None
+    for line in out.splitlines():
+        if line.startswith(_CURSOR_LINE):
+            c = line[len(_CURSOR_LINE):].strip()
+            new_cursor = c if _CURSOR_RE.match(c) else None
+    if cursor and new_cursor is None:
+        # a resume ALWAYS prints the cursor (measured, rx_heard above)
+        return None, None, (f"journal unreadable: journalctl returned nothing for "
+                            f"{unit} after the cursor (unit renamed, or access lost)")
+    return parse_dm_journal(out), new_cursor or cursor, None
