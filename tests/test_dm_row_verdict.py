@@ -16,8 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from utils.dm_delivery import (  # noqa: E402
     ROW_DELIVERED, ROW_FAILED, ROW_LEFT_UNCONFIRMED, ROW_NO_ACK, ROW_WAITING,
-    ROW_STATES, WAITING_S, JournalLine, RoutingReply, Send, Witness,
-    routing_error_name, row_verdict,
+    ROW_STATES, WAITING_S, RoutingReply, Send, Witness, row_verdict,
 )
 
 ME = 0x6201CE25          # the sender box's radio -- never told to the judge
@@ -38,18 +37,6 @@ def _ack(dt, sender, pid, err="NONE"):
 
 class TestMeasuredRows:
     """The §4 table, row by row -- each read handed_off that day."""
-
-    def test_nak_a_local_refusal_is_a_named_hint_never_failed(self):
-        """Never-seen node: our radio refused (journal-only, exact idFrom);
-        the DM never reached /e/. Operator 11-25 (after Fable r2 #1): the
-        journal is a HINT, never final -- the refusal is NAMED on the row."""
-        s = _row(0xAB3C8ABF, dest=0x5EED1E56)
-        j = [JournalLine(T0 + 0.1, "alloc_err", packet_id=0xAB3C8ABF, err=39)]
-        v = row_verdict(s, [], LIVE, journal=j, now=T0 + 5)
-        assert v.state == ROW_WAITING
-        assert "PKI_SEND_FAIL_PUBLIC_KEY" in v.detail and "journal" in v.detail
-        v = row_verdict(s, [], LIVE, journal=j, now=T0 + WAITING_S + 1)
-        assert v.state == ROW_NO_ACK and "PKI_SEND_FAIL_PUBLIC_KEY" in v.detail
 
     def test_relay_1_destination_nak_is_failed_said_by_destination(self):
         s = _row(0xAB3C8AC1, dest=FAR)
@@ -91,18 +78,6 @@ class TestMeasuredRows:
         assert v.sent_n == 3
         assert "sent 3×" in v.detail
 
-    def test_moc5_journal_routing_from_dest_is_possible_ack_never_delivered(self):
-        """moc5 before the uplink flip: p5's ack in moc5's journal, absent
-        from its broker. The journal has no request_id at INFO -> it can
-        never decide 'delivered'."""
-        s = _row(0x2A089819)
-        j = [JournalLine(T0 + 2.5, "routing_from", sender=P5)]
-        v = row_verdict(s, [], LIVE, journal=j, tx_seen=1,
-                        now=T0 + WAITING_S + 1)
-        assert v.state == ROW_NO_ACK
-        assert v.possible_ack is True
-        assert "possible ack, not matched" in v.detail
-
     def test_replug_after_boot_is_delivered(self):
         s = _row(0xAB3C8AC6)
         v = row_verdict(s, [_ack(3.0, P5, 0xAB3C8AC6)], LIVE, now=T0 + 4)
@@ -133,26 +108,6 @@ class TestRule:
         assert v.state == ROW_FAILED
         assert v.said_by == "!000000d8"
 
-    def test_refusal_for_another_packet_id_is_not_this_rows(self):
-        s = _row(0xAB3C8AC0)
-        j = [JournalLine(T0 + 0.1, "alloc_err", packet_id=0xAB3C8ABF, err=39)]
-        v = row_verdict(s, [], LIVE, journal=j, now=T0 + 5)
-        assert v.state == ROW_WAITING
-
-    def test_journal_routing_from_someone_else_is_not_possible_ack(self):
-        s = _row(0x2A089819)
-        j = [JournalLine(T0 + 2.5, "routing_from", sender=FAR)]
-        v = row_verdict(s, [], LIVE, journal=j, now=T0 + WAITING_S + 1)
-        assert v.state == ROW_NO_ACK
-        assert v.possible_ack is False
-
-    def test_journal_routing_before_the_send_is_not_possible_ack(self):
-        s = _row(0x2A089819)
-        j = [JournalLine(T0 - 30, "routing_from", sender=P5)]
-        v = row_verdict(s, [], LIVE, journal=j, now=T0 + WAITING_S + 1)
-        assert v.possible_ack is False
-
-
 class TestBlindWitness:
     """UNKNOWN is first-class: a box that cannot see acks says why."""
 
@@ -171,14 +126,6 @@ class TestBlindWitness:
         v = row_verdict(s, [], late, now=T0 + 200)
         assert v.state == ROW_NO_ACK
         assert "witness started after this send" in v.why
-
-    def test_journal_refusal_is_still_named_when_mqtt_witness_is_blind(self):
-        """The journal hint survives a blind /e/ witness (hint, not verdict)."""
-        s = _row(0xAB3C8ABF, dest=0x5EED1E56)
-        blind = Witness(since=None, why="map MQTT listener not running")
-        j = [JournalLine(T0 + 0.1, "alloc_err", packet_id=0xAB3C8ABF, err=39)]
-        v = row_verdict(s, [], blind, journal=j, now=T0 + 5)
-        assert v.state == ROW_NO_ACK and "PKI_SEND_FAIL_PUBLIC_KEY" in v.detail
 
     def test_wrong_subscription_control_never_delivered(self):
         """§4 #5: the witness on the wrong topic sees nothing -> no ack
@@ -209,16 +156,6 @@ class TestVocabulary:
         """§4b Q2': 60 s, BELIEVED (n=6 acks, max 24 s)."""
         assert WAITING_S == 60
 
-    @pytest.mark.parametrize("code,name", [
-        (0, "NONE"), (5, "MAX_RETRANSMIT"), (35, "PKI_UNKNOWN_PUBKEY"),
-        (39, "PKI_SEND_FAIL_PUBLIC_KEY")])
-    def test_error_names_pinned_to_firmware_proto(self, code, name):
-        """mesh.proto Routing.Error at firmware 54e0d8d."""
-        assert routing_error_name(code) == name
-
-    def test_unknown_error_code_is_named_not_dropped(self):
-        assert routing_error_name(77) == "err=77"
-
 
 class TestClock:
     """hfm #6: RTC-less Pis, NTP steps -- a backward step must not hold a
@@ -236,21 +173,6 @@ class TestClock:
 
 class TestReviewR1:
     """code-review r1 (2026-11-25) findings 2, 3, 9 -- red on f9a23a48."""
-
-    def test_f2_destination_ack_outranks_any_journal_error(self):
-        s = _row(0xAB3C8AC6)
-        j = [JournalLine(T0 + 20, "alloc_err", packet_id=0xAB3C8AC6, err=39)]
-        v = row_verdict(s, [_ack(3.0, P5, 0xAB3C8AC6)], LIVE, journal=j, now=T0 + 25)
-        assert v.state == ROW_DELIVERED
-
-    @pytest.mark.parametrize("code", [3, 5])   # TIMEOUT, MAX_RETRANSMIT
-    def test_f2_a_retry_give_up_is_never_failed(self, code):
-        """Our radio giving up proves only that IT heard no ack (§4b)."""
-        s = _row(0xAB3C8AC4)
-        j = [JournalLine(T0 + 17, "alloc_err", packet_id=0xAB3C8AC4, err=code)]
-        v = row_verdict(s, [], LIVE, journal=j, tx_seen=3, now=T0 + WAITING_S + 1)
-        assert v.state == ROW_NO_ACK
-        assert "our radio gave up" in v.detail
 
     def test_f3_ack_in_the_ring_counts_after_a_reconnect(self):
         """A broker blip moves witness.since past the send; the ring still

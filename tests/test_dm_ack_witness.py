@@ -252,13 +252,6 @@ class TestReviewR1:
 class TestReviewR2:
     """Fable r2 #4 + #7 at the witness -- red on d01fafa2."""
 
-    def test_r2_7_own_radios_ack_is_marked_via_own(self):
-        w = _live()
-        w.observe(TOPIC, _ack(frm=ME, pid=0x10), now=T0 + 0.02)
-        w.observe(TOPIC, _ack(), now=T0 + 2)
-        own, dest = sorted(w.snapshot(now=T0 + 3)["replies"], key=lambda r: r.t)
-        assert own.via_own is True and dest.via_own is False
-
     def test_r2_4_a_channel_is_visible_only_once_something_decrypted_on_it(self):
         import base64
         w = _live()

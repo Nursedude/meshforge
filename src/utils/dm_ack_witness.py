@@ -51,6 +51,9 @@ class AckWitness:
         self._why = "the MQTT ack witness has not started"
         self._replies: deque = deque(maxlen=RING_CAP)
         self._tx: "OrderedDict[int, int]" = OrderedDict()
+        #: packet id -> its OWN ``from``, from the sender's own uplink (r3 #1:
+        #: a DM to our own radio is decided from the DM, never from an ack)
+        self._tx_from: Dict[int, int] = {}
         self._channels: Dict[str, float] = {}
         #: channels on which the DEFAULT key opened something (r2 #4: "seen"
         #: is presence, not function -- only these can carry a visible ack)
@@ -106,8 +109,10 @@ class AckWitness:
             # transmission heard elsewhere -- r1 F6.
             if pid and gateway == f"!{frm:08x}":
                 self._tx[pid] = self._tx.pop(pid, 0) + 1
+                self._tx_from[pid] = frm
                 while len(self._tx) > TX_CAP:
-                    self._tx.popitem(last=False)
+                    old, _ = self._tx.popitem(last=False)
+                    self._tx_from.pop(old, None)
             elif pid:
                 self._counts["other_gateway_copy"] += 1
             if pki:
@@ -135,10 +140,7 @@ class AckWitness:
             return
         with self._lock:
             self._counts["routing"] += 1
-            # via_own: the envelope's gateway IS the reply's sender -- our
-            # radio uplinking its own ack (wire fact, r2 #7)
-            self._replies.append(RoutingReply(t, int(dp.from_node), int(dp.request_id),
-                                              err, via_own=gateway == f"!{int(dp.from_node):08x}"))
+            self._replies.append(RoutingReply(t, int(dp.from_node), int(dp.request_id), err))
 
     def _bump(self, k: str) -> None:
         with self._lock:
@@ -155,6 +157,7 @@ class AckWitness:
             return {"witness": Witness(self._since, self._why),
                     "replies": replies,
                     "tx": dict(self._tx),
+                    "tx_from": dict(self._tx_from),
                     "channels": dict(self._channels),
                     "decrypted": dict(self._decrypted),
                     "counts": dict(self._counts)}

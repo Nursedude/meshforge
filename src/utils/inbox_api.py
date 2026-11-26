@@ -14,7 +14,6 @@ Honesty rules this module keeps (honest_failure_modes #1, #2):
 """
 import logging
 import re
-import subprocess
 import time
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -342,9 +341,6 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
 
 #: The witness line names channels seen on the broker this recently (Q19).
 DM_CHANNELS_RECENT_S = 30 * 60
-#: A send this long past its waiting window no longer forks journalctl: the
-#: journal is a hint about the send window, and the cache keeps what it read.
-JOURNAL_FRESH_S = 120
 
 
 def _dm_sends(threads: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
@@ -359,20 +355,19 @@ def _dm_sends(threads: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[
 def _verdict_dict(v, kept: bool) -> Dict[str, Any]:
     return {"state": v.state, "detail": v.detail, "reason": v.reason,
             "said_by": v.said_by, "why": v.why, "latency_s": v.latency_s,
-            "late": v.late, "sent_n": v.sent_n, "possible_ack": v.possible_ack,
-            "kept": kept}
+            "late": v.late, "sent_n": v.sent_n, "kept": kept}
 
 
 def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Optional[str]]:
     """BIC-2 DM slice 1: every outbound DM with a radio id carries
     ``delivery`` -- exactly ONE of ``dm_delivery.ROW_STATES`` (design §1 +
     §4b). Settled verdicts come from the store (kept across a map restart);
-    the rest are judged now from this process's ``/e/`` witness and THIS
-    box's journal, read only when something is unsettled. A failure of any
-    witness is said on the row and in ``delivery_error``, never a 503 and
+    the rest are judged now from this process's ``/e/`` witness, the ONE
+    source (operator 11-25: radio-log hints cut from slice 1). A failure of
+    any witness is said on the row and in ``delivery_error``, never a 503 and
     never an absent field (hfm #1, #9). Returns (witness line, error)."""
     from commands import messaging as store
-    from utils import dm_ack_witness, dm_delivery as dd, dm_journal_cache
+    from utils import dm_ack_witness, dm_delivery as dd
     now = time.time()
     errors: List[str] = []
     snap = dm_ack_witness.get_witness().snapshot(now=now)
@@ -393,12 +388,11 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
         k = kept.get(m["id"])
         if k is not None:
             late = k.get("latency_s") is not None and k["latency_s"] > dd.WAITING_S
-            m["delivery"] = {**k, "why": "", "late": late,
-                             "possible_ack": False, "kept": True}
-            # Terminal: delivered, or a failure the destination / our radio
-            # said. A RELAY's NAK is not the destination's answer: keep
-            # judging live, and a later destination ack replaces it.
-            if k["state"] != dd.ROW_FAILED or k.get("said_by") in dd.TERMINAL_SAID_BY:
+            m["delivery"] = {**k, "why": "", "late": late, "kept": True}
+            # Only DELIVERED is final. A kept failure -- even the
+            # destination's own NAK -- is re-judged live, and the
+            # destination's later ack replaces it (operator 11-25, r3 #8).
+            if k["state"] != dd.ROW_FAILED:
                 continue
         sent = _epoch(m.get("ts"))
         if sent is None:
@@ -409,35 +403,19 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
                              "kept": False}
             continue
         todo.append((t, m, sent))
-    journal: List[Any] = []
-    journal_why = None
-    fresh = [s for _, _, s in todo if now - s <= dd.WAITING_S + JOURNAL_FRESH_S]
-    cache = dm_journal_cache.get_dm_journal_cache()
-    if fresh:
-        # ONE in-process cache with a cursor: a poll walks only the lines
-        # since the last poll (r1 F1). Only a FRESH send forks journalctl:
-        # the journal is a hint about the send window (Fable r2 #10).
-        journal, journal_why = cache.read(subprocess.run, since=min(fresh) - 2, now=now)
-        if journal_why or journal is None:
-            errors.append(journal_why)
-            journal = []
-    if todo:
-        # older rows: whatever the cache already holds -- never a new read
-        journal = list(journal) + [ln for ln in (cache.held(
-            since=min(s for _, _, s in todo) - 2, now=now) or []) if ln not in journal]
     unreadable = _unreadable_channels(snap, now)
     keep = []
     for t, m, sent in todo:
-        v = dd.row_verdict(dd.Send(sent, m["packet_id"], t.get("partner")),
-                           snap["replies"], snap["witness"], journal=journal,
+        v = dd.row_verdict(dd.Send(sent, m["packet_id"], t.get("partner"),
+                                   sender=(snap.get("tx_from") or {}).get(m["packet_id"])),
+                           snap["replies"], snap["witness"],
                            tx_seen=snap["tx"].get(m["packet_id"], 0), now=now)
         if "delivery" in m and not (v.state == dd.ROW_DELIVERED or (
-                v.state == dd.ROW_FAILED and v.said_by in dd.TERMINAL_SAID_BY)):
-            continue          # a kept relay NAK stands until the destination answers
+                v.state == dd.ROW_FAILED and v.said_by in dd.TERMINAL_SAID_BY
+                and m["delivery"].get("said_by") not in dd.TERMINAL_SAID_BY)):
+            continue          # a kept failure stands until something outranks it
         d = _verdict_dict(v, kept=False)
         if v.state not in dd.ROW_FINAL_STATES:
-            if journal_why:
-                d["detail"] += f" · {journal_why} (journal hints unseen)"
             if kept_why:
                 d["detail"] += f" · {kept_why}"
             if unreadable and v.state != dd.ROW_WAITING:

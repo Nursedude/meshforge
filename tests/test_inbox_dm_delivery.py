@@ -2,7 +2,7 @@
 
 End to end over a real temp store: ``read_inbox`` → ``_attach_delivery`` →
 ``dm_delivery.row_verdict``, with the two witnesses stubbed at their seams
-(the map's in-memory ``/e/`` witness, this box's journal). On 2026-11-25
+(the map's in-memory ``/e/`` witness -- the one source). On 2026-11-25
 every one of these rows read ``handed_off`` -- refused, failed and
 delivered alike (design §4b).
 """
@@ -14,7 +14,7 @@ from commands import messaging as messaging_mod
 from utils import dm_ack_witness, inbox_api
 from utils.dm_delivery import (
     ROW_DELIVERED, ROW_FAILED, ROW_NO_ACK, ROW_STATES, ROW_WAITING, WAITING_S,
-    JournalLine, RoutingReply, Witness,
+    RoutingReply, Witness,
 )
 
 P5 = 0xB03DA894
@@ -54,15 +54,14 @@ def _broadcast(packet_id=PID + 1):
     return r.data["message_id"]
 
 
-def _read(now, witness, journal=([], None)):
+def _read(now, witness):
     with patch.object(inbox_api.time, "time", return_value=now), \
          patch("utils.message_listener.get_listener_status", return_value={}), \
          patch("utils.inbox_legs.load_sections", return_value=None), \
-         patch.object(dm_ack_witness, "get_witness", return_value=witness), \
-         patch("utils.dm_journal_cache.DmJournalCache.read", return_value=journal) as jr:
+         patch.object(dm_ack_witness, "get_witness", return_value=witness):
         out = inbox_api.read_inbox()
     msgs = {m["id"]: m for t in out["threads"] for m in t["messages"]}
-    return out, msgs, jr
+    return out, msgs, None
 
 
 def _sent(mid):
@@ -84,16 +83,6 @@ class TestRowStates:
         d = msgs[mid]["delivery"]
         assert d["state"] == ROW_DELIVERED and d["kept"] is True
 
-    def test_own_radio_refusal_is_named_never_kept(self, tmp_db):
-        """Operator 11-25 (Fable r2 #1): the journal is a hint, never final."""
-        mid = _dm(dest="!5eed1e56")
-        t = _sent(mid)
-        j = [JournalLine(t + 0.1, "alloc_err", packet_id=PID, err=39)]
-        _, msgs, _ = _read(t + 5, StubWitness(since=t - 60), journal=(j, None))
-        d = msgs[mid]["delivery"]
-        assert d["state"] == ROW_WAITING and "PKI_SEND_FAIL_PUBLIC_KEY" in d["detail"]
-        assert messaging_mod.kept_dm([(mid, PID)])[0] == {}
-
     def test_inside_the_window_reads_waiting_and_is_not_kept(self, tmp_db):
         mid = _dm()
         t = _sent(mid)
@@ -114,15 +103,6 @@ class TestRowStates:
         _, msgs, _ = _read(t + 5, StubWitness(since=None, why="the MQTT ack witness has not started"))
         d = msgs[mid]["delivery"]
         assert d["state"] == ROW_NO_ACK and "has not started" in d["why"]
-
-    def test_unreadable_journal_is_said_never_a_503(self, tmp_db):
-        mid = _dm()
-        t = _sent(mid)
-        out, msgs, _ = _read(t + 5, StubWitness(since=t - 60),
-                             journal=(None, "journal unreadable: timed out"))
-        assert out["state"] == "ok"
-        d = msgs[mid]["delivery"]
-        assert d["state"] == ROW_WAITING and "journal unreadable" in d["detail"]
 
     def test_a_relay_nak_then_destination_ack_ends_delivered(self, tmp_db):
         """The destination's truth outranks a kept relay NAK."""
@@ -155,20 +135,6 @@ class TestRowStates:
         for now in (t + 1, t + WAITING_S + 1):
             _, msgs, _ = _read(now, StubWitness(since=t - 60))
             assert msgs[mid]["delivery"]["state"] in ROW_STATES
-
-    def test_journal_read_only_when_something_is_unsettled(self, tmp_db):
-        mid = _dm()
-        t = _sent(mid)
-        _read(t + 3, StubWitness(since=t - 60, replies=[RoutingReply(t + 2, P5, PID, "NONE")]))
-        _, _, jr = _read(t + 9, StubWitness(since=t - 60))
-        assert not jr.called          # settled + kept: no journal walk
-
-    def test_journal_read_starts_at_the_oldest_unsettled_send(self, tmp_db):
-        mid = _dm()
-        t = _sent(mid)
-        _, _, jr = _read(t + 5, StubWitness(since=t - 60))
-        assert jr.call_args.kwargs["since"] <= t
-
 
 class TestWitnessLine:
 
@@ -229,13 +195,15 @@ class TestStore:
         conn.close()
 
 
-def test_a_destination_nak_is_terminal_never_rejudged(tmp_db):
+def test_a_kept_destination_nak_is_replaced_by_its_later_ack(tmp_db):
+    """Operator 11-25 (Fable r3 #8): only delivered is final -- the verdict
+    never depends on whether someone polled between the NAK and the ack."""
     mid = _dm()
     t = _sent(mid)
-    _read(t + 30, StubWitness(since=t - 60, replies=[RoutingReply(t + 24, P5, PID, "PKI_UNKNOWN_PUBKEY")]))
-    _, msgs, jr = _read(t + 40, StubWitness(since=t - 60, replies=[RoutingReply(t + 35, P5, PID, "NONE")]))
-    d = msgs[mid]["delivery"]
-    assert d["state"] == ROW_FAILED and d["kept"] is True and not jr.called
+    nak = RoutingReply(t + 24, P5, PID, "PKI_UNKNOWN_PUBKEY")
+    _read(t + 30, StubWitness(since=t - 60, replies=[nak]))
+    _, msgs, _ = _read(t + 40, StubWitness(since=t - 60, replies=[nak, RoutingReply(t + 35, P5, PID, "NONE")]))
+    assert msgs[mid]["delivery"]["state"] == ROW_DELIVERED
 
 
 def test_a_kept_relay_nak_is_shown_while_the_destination_is_silent(tmp_db):
@@ -270,26 +238,6 @@ class TestPage:
 
 class TestReviewR1Inbox:
     """code-review r1 findings 1 + 10 at the inbox seam -- red on f9a23a48."""
-
-    def test_f1_the_inbox_reads_the_journal_through_the_one_cache(self, tmp_db):
-        mid = _dm()
-        t = _sent(mid)
-        calls = []
-
-        class Cache:
-            def read(self, runner, *, since, now):
-                calls.append(since)
-                return [], None
-
-            def held(self, *, since, now):
-                return []
-        with patch("utils.dm_journal_cache.get_dm_journal_cache", return_value=Cache()), \
-                patch.object(inbox_api.time, "time", return_value=t + 5), \
-                patch("utils.message_listener.get_listener_status", return_value={}), \
-                patch("utils.inbox_legs.load_sections", return_value=None), \
-                patch.object(dm_ack_witness, "get_witness", return_value=StubWitness(since=t - 60)):
-            inbox_api.read_inbox()
-        assert len(calls) == 1 and calls[0] <= t
 
     def test_f10_destination_nak_upgrades_a_kept_relay_nak(self, tmp_db):
         mid = _dm()
@@ -353,31 +301,6 @@ class TestReviewR2:
         with patch.object(messaging_mod, "kept_dm", side_effect=OSError("disk")):
             _, msgs, _ = _read(t + 999, StubWitness(since=None, why="restarted"))
         assert "kept verdicts unreadable" in msgs[mid]["delivery"]["detail"]
-
-    def test_r2_10_old_unsettled_rows_never_fork_the_journal(self, tmp_db):
-        mid = _dm()
-        t = _sent(mid)
-        _, _, jr = _read(t + WAITING_S + 600, StubWitness(since=t - 60))
-        assert not jr.called
-
-    def test_r2_10_fresh_row_reads_the_journal(self, tmp_db):
-        mid = _dm()
-        t = _sent(mid)
-        _, _, jr = _read(t + 5, StubWitness(since=t - 60))
-        assert jr.called
-
-    def test_mut_journal_since_covers_the_oldest_fresh_send(self, tmp_db):
-        a = _dm(packet_id=PID)
-        ta = _sent(a)
-        _dm(packet_id=PID + 7)
-        _, _, jr = _read(ta + 5, StubWitness(since=ta - 60))
-        assert jr.call_args.kwargs["since"] <= ta
-
-    def test_mut_journal_failure_reaches_delivery_error(self, tmp_db):
-        mid = _dm()
-        t = _sent(mid)
-        out, _, _ = _read(t + 5, StubWitness(since=t - 60), journal=(None, "journal unreadable: x"))
-        assert "journal unreadable: x" in out["delivery_error"]
 
     def test_mut_rns_dm_threads_carry_no_delivery(self, tmp_db):
         r = messaging_mod.store_outgoing("Wx", "rns", "a" * 32, channel=0,

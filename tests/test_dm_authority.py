@@ -9,12 +9,11 @@ patched at one of two sources. Now ONE rule, pinned here:
 | /e/ NAK from dest (not a retry give-up)  | failed (said by the destination) | yes                 |
 | /e/ NAK from anyone else (not a give-up) | failed (said by !id)             | no -- dest outranks |
 | /e/ TIMEOUT / MAX_RETRANSMIT, any sender | a hint ("gave up after retries") | never               |
-| journal ``Alloc an err`` (any code)      | a hint only (operator 11-25)     | never               |
-| journal routing from dest                | "possible ack, not matched"      | never               |
+| a DM to our own radio (DM header)        | a hint ("own radio")             | never               |
 
-Operator 2026-11-25 (AskUserQuestion): "Journal = hint, never final" --
-any node's text can shape the journal (a newline in a received message
-becomes its own prefixed journal entry, Fable r2 #1).
+Operator 2026-11-25, after Fable r3: the radio-log hints are CUT from
+slice 1 -- the ``/e/`` ring is the only source. Only ``delivered`` is
+final: the destination's later ack replaces even its own NAK.
 """
 import os
 import sys
@@ -25,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from utils.dm_delivery import (  # noqa: E402
     DELIVERED, FAILED, ROW_DELIVERED, ROW_FAILED, ROW_LEFT_UNCONFIRMED,
-    ROW_NO_ACK, ROW_WAITING, TERMINAL_SAID_BY, WAITING_S, JournalLine,
+    ROW_NO_ACK, ROW_WAITING, TERMINAL_SAID_BY, WAITING_S,
     RoutingReply, Send, Witness, classify, row_verdict,
 )
 
@@ -42,34 +41,14 @@ def _s(dest=P5, t=T0):
     return Send(t, PID, dest)
 
 
-def _r(dt, sender, err="NONE", pid=PID, via_own=False):
-    return RoutingReply(T0 + dt, sender, pid, err, via_own=via_own)
-
-
-def _j(dt, err, pid=PID):
-    return JournalLine(T0 + dt, "alloc_err", packet_id=pid, err=err)
+def _r(dt, sender, err="NONE", pid=PID):
+    return RoutingReply(T0 + dt, sender, pid, err)
 
 
 class TestFinality:
 
-    def test_only_the_destination_is_terminal(self):
+    def test_only_the_destinations_failure_outranks_in_the_store(self):
         assert TERMINAL_SAID_BY == ("the destination",)
-
-    @pytest.mark.parametrize("err", [6, 39, 1])
-    def test_journal_refusal_is_a_hint_never_failed(self, err):
-        v = row_verdict(_s(), [], LIVE, journal=[_j(0.1, err)], now=LATE)
-        assert v.state == ROW_NO_ACK
-        assert any("our radio reported" in h for h in v.hints)
-        assert "journal" in v.detail
-
-    def test_journal_hint_rides_the_waiting_row_too(self):
-        v = row_verdict(_s(), [], LIVE, journal=[_j(0.1, 39)], now=T0 + 5)
-        assert v.state == ROW_WAITING and "PKI_SEND_FAIL_PUBLIC_KEY" in v.detail
-
-    def test_journal_line_outside_the_send_window_is_not_this_sends(self):
-        for dt in (-3000, -5, WAITING_S + 10):
-            v = row_verdict(_s(), [], LIVE, journal=[_j(dt, 6)], now=LATE + WAITING_S)
-            assert not v.hints, dt
 
     @pytest.mark.parametrize("err", ["MAX_RETRANSMIT", "TIMEOUT"])
     @pytest.mark.parametrize("sender", [ME, RELAY, P5])
@@ -88,22 +67,17 @@ class TestFinality:
         v = row_verdict(_s(), [_r(4, P5, "NO_ROUTE"), _r(6, P5)], LIVE, now=T0 + 7)
         assert v.state == ROW_DELIVERED
 
-    def test_delivered_outranks_a_journal_line(self):
-        v = row_verdict(_s(), [_r(3, P5)], LIVE, journal=[_j(0.5, 6)], now=T0 + 4)
-        assert v.state == ROW_DELIVERED
-
-
 class TestWireFacts:
 
-    def test_an_ack_uplinked_by_its_own_sender_is_never_delivery(self):
-        """A DM to this box's own radio: the only 'destination' ack is our
-        radio's own, uplinked by itself (Fable r2 #7). No own-id needed."""
-        v = row_verdict(_s(dest=ME), [_r(0.02, ME, via_own=True)], LIVE, now=LATE)
+    def test_a_dm_to_our_own_radio_is_never_delivery(self):
+        """Decided from the DM's OWN header (its uplinked from == dest), never
+        from an ack's gateway (Fable r3 #1). No own-node id is inferred."""
+        v = row_verdict(Send(T0, PID, ME, sender=ME), [_r(0.02, ME)], LIVE, now=LATE)
         assert v.state != ROW_DELIVERED
         assert any("own radio" in h for h in v.hints)
 
-    def test_destination_ack_uplinked_by_us_is_delivery(self):
-        v = row_verdict(_s(), [_r(2, P5, via_own=False)], LIVE, now=T0 + 3)
+    def test_destination_ack_is_delivery_whoever_uplinked_it(self):
+        v = row_verdict(Send(T0, PID, P5, sender=ME), [_r(2, P5)], LIVE, now=T0 + 3)
         assert v.state == ROW_DELIVERED
 
     def test_ack_stamped_before_the_send_is_said_never_silently_dropped(self):
@@ -118,7 +92,7 @@ class TestWireFacts:
         assert not v.hints
 
     def test_own_ack_alone_after_window_is_left_unconfirmed(self):
-        v = row_verdict(_s(), [_r(0.02, ME, via_own=True)], LIVE, now=LATE)
+        v = row_verdict(_s(), [_r(0.02, ME)], LIVE, now=LATE)
         assert v.state == ROW_LEFT_UNCONFIRMED
 
 
@@ -146,10 +120,3 @@ class TestMutantKillers:
     def test_an_unparseable_destination_is_never_delivered(self):
         (o,) = classify([Send(T0, PID, "not-a-node")], [_r(2, P5)])
         assert o.status != DELIVERED
-
-    def test_possible_ack_only_inside_the_send_window(self):
-        late = [JournalLine(T0 + WAITING_S + 10, "routing_from", sender=P5)]
-        v = row_verdict(_s(), [], LIVE, journal=late, now=T0 + 2 * WAITING_S + 20)
-        assert v.possible_ack is False
-        early = [JournalLine(T0 - 1, "routing_from", sender=P5)]
-        assert row_verdict(_s(), [], LIVE, journal=early, now=LATE).possible_ack is False

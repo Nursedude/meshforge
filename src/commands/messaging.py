@@ -955,8 +955,11 @@ def _dm_terminal_said_by():
 
 def _dm_row_ok(state, detail, reason, said_by, latency, finals) -> bool:
     """THE one validity rule for a dm_kept row (writer refuses, reader skips)."""
+    # "our radio" was the journal's voice; the journal decides nothing now
+    # (operator 11-25), so no writer can produce it -- refuse an early row.
     return (state in finals and isinstance(detail, str) and bool(detail)
             and isinstance(reason, str) and isinstance(said_by, str)
+            and said_by != "our radio"
             and (latency is None or (isinstance(latency, (int, float))
                                      and not isinstance(latency, bool)
                                      and math.isfinite(latency))))

@@ -503,6 +503,18 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         prefix = f"{root}/{self._config.get('channel', DEFAULT_CHANNEL)}/"
         return topic.startswith(prefix)
 
+    def _periodic_maintenance(self) -> None:
+        """Persist node data for the map service and clean stale nodes, on
+        their cadences. Called on every envelope, witness-only ones too (Fable
+        r3: a witness-only return skipped it when the own channel was quiet)."""
+        now = time.time()
+        if now - self._last_cache_write >= self._cache_interval:
+            self._persist_map_cache()
+            self._last_cache_write = now
+        if now - self._last_cleanup >= self._cleanup_interval:
+            self._cleanup_stale_nodes()
+            self._last_cleanup = now
+
     def _on_message(self, client, userdata, msg):
         """MQTT message callback."""
         try:
@@ -532,6 +544,7 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
                     with self._stats_lock:
                         self._stats["witness_only_envelopes"] = \
                             self._stats.get("witness_only_envelopes", 0) + 1
+                    self._periodic_maintenance()   # r3: still on a quiet own channel
                     return
 
             with self._stats_lock:
@@ -545,16 +558,7 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
                 # Encrypted payload - just track node existence
                 self._handle_encrypted_message(topic, payload)
 
-            # Periodically persist node data for map service
-            now = time.time()
-            if now - self._last_cache_write >= self._cache_interval:
-                self._persist_map_cache()
-                self._last_cache_write = now
-
-            # Periodically clean stale nodes
-            if now - self._last_cleanup >= self._cleanup_interval:
-                self._cleanup_stale_nodes()
-                self._last_cleanup = now
+            self._periodic_maintenance()
 
         except Exception as e:
             # Witnessed swallow: a repeating handler bug used to be 100%
