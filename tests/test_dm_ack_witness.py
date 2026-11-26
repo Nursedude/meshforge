@@ -205,15 +205,16 @@ class TestEndToEnd:
         w.observe(TOPIC, _ack(frm=ME, pid=0x10), now=T0 + 0.02)   # own radio
         w.observe(TOPIC, _ack(), now=T0 + 1.9)
         s = w.snapshot(now=T0 + 3)
-        v = row_verdict(Send(T0, DM_ID, P5), s["replies"], s["witness"],
-                        tx_seen=s["tx"].get(DM_ID, 0), now=T0 + 3)
+        v = row_verdict(Send(T0, DM_ID, P5, sender=s["tx_from"].get(DM_ID)), s["replies"],
+                        s["witness"], tx_seen=s["tx"].get(DM_ID, 0), now=T0 + 3)
         assert v.state == ROW_DELIVERED
 
     def test_relay_nak_row_failed_by_destination(self):
         w = _live()
         w.observe(TOPIC, _ack(error=35), now=T0 + 24)
         s = w.snapshot(now=T0 + 25)
-        v = row_verdict(Send(T0, DM_ID, P5), s["replies"], s["witness"], now=T0 + 25)
+        v = row_verdict(Send(T0, DM_ID, P5, sender=ME), s["replies"], s["witness"],
+                        now=T0 + 25)
         assert v.state == ROW_FAILED and v.said_by == "the destination"
 
     def test_off_row_no_ack_sent_three_times(self):

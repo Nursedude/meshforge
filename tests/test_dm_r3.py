@@ -61,10 +61,12 @@ class TestSelfDm:
         assert v.state == ROW_LEFT_UNCONFIRMED
         assert "own radio" in v.detail
 
-    def test_unknown_sender_falls_back_to_the_plain_rule(self):
+    def test_unknown_sender_is_not_delivery_yet(self):
+        """Inverted by r4 #1 (operator 11-26): with neither the header nor
+        this box's own id, a self-DM is not ruled out -- never delivered."""
         v = row_verdict(Send(T0, PID, P5), [RoutingReply(T0 + 2, P5, PID, "NONE")],
                         LIVE, now=T0 + 3)
-        assert v.state == ROW_DELIVERED
+        assert v.state != ROW_DELIVERED
 
     def test_routing_reply_has_no_via_own(self):
         assert "via_own" not in RoutingReply.__dataclass_fields__
@@ -105,7 +107,7 @@ class TestNakThenAck:
         class W:
             def __init__(self, replies):
                 self.s = {"witness": Witness(T0 - 3600), "replies": replies, "tx": {},
-                          "tx_from": {}, "channels": {}, "decrypted": {}, "counts": {}}
+                          "tx_from": {PID: ME}, "channels": {}, "decrypted": {}, "counts": {}}
 
             def snapshot(self, now=None):
                 return self.s
@@ -130,7 +132,7 @@ class TestR3Nits:
     def test_one_slop_constant_and_a_reply_just_before_the_stamp_counts(self):
         """r3 #10: the row is stamped AFTER the HTTP send returns."""
         assert REPLY_SLOP_S == 2
-        v = row_verdict(Send(T0, PID, P5), [RoutingReply(T0 - 1.5, P5, PID, "NONE")],
+        v = row_verdict(Send(T0, PID, P5, sender=ME), [RoutingReply(T0 - 1.5, P5, PID, "NONE")],
                         LIVE, now=T0 + 3)
         assert v.state == ROW_DELIVERED
 
@@ -150,11 +152,17 @@ class TestR3Nits:
         conn.close()
         assert messaging_mod.kept_dm([(mid, PID)]) == ({}, 1)
 
-    def test_kept_detail_never_carries_a_hint_tail(self):
-        """r3 #5 (moot after the cut, pinned anyway): row_verdict emits no hints."""
-        v = row_verdict(Send(T0, PID, P5), [RoutingReply(T0 + 24, P5, PID, "PKI_UNKNOWN_PUBKEY")],
-                        LIVE, now=T0 + 30)
-        assert v.state == ROW_FAILED and "hint" not in v.detail
+    def test_the_stored_base_never_carries_the_live_tail(self):
+        """r3 #5, re-pinned by Fable r4 #5 (the old assertion -- the word
+        "hint" absent -- pinned nothing): ``base`` is what the store keeps,
+        ``detail`` = base + the live tail."""
+        v = row_verdict(Send(T0, PID, P5, sender=ME),
+                        [RoutingReply(T0 + 2, 0x514EAE28, PID, "NO_ROUTE"),
+                         RoutingReply(T0 + 17, ME, PID, "MAX_RETRANSMIT")],
+                        LIVE, tx_seen=2, now=T0 + 30)
+        assert v.state == ROW_FAILED
+        assert v.base == "failed: NO_ROUTE (said by !514eae28)"
+        assert v.detail == v.base + v.tail and "gave up" in v.tail and "sent 2×" in v.tail
 
 
 class TestMutantKillersR3:

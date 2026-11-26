@@ -38,7 +38,7 @@ LATE = T0 + WAITING_S + 5
 
 
 def _s(dest=P5, t=T0):
-    return Send(t, PID, dest)
+    return Send(t, PID, dest, sender=ME)  # r4 #1: the DM's own uplinked header rules out a self-DM
 
 
 def _r(dt, sender, err="NONE", pid=PID):

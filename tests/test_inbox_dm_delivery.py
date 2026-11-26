@@ -32,9 +32,11 @@ def tmp_db(tmp_path, monkeypatch):
 
 
 class StubWitness:
-    def __init__(self, since=0.0, why="", replies=(), tx=None, channels=None):
+    def __init__(self, since=0.0, why="", replies=(), tx=None, channels=None, tx_from=None):
+        # r4 #1: our gateway uplinked the DM's own header (the realistic case)
         self.snap = {"witness": Witness(since, why), "replies": list(replies),
                      "tx": dict(tx or {}), "channels": dict(channels or {}),
+                     "tx_from": {PID: ME} if tx_from is None else dict(tx_from),
                      "counts": {"envelopes": 3}}
 
     def snapshot(self, now=None):

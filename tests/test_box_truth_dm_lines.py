@@ -89,8 +89,8 @@ CUR = b"-- cursor: s=abc;i=1\n"
 
 
 class TestRead:
-    """read_dm_journal -> (lines | None, cursor, why). Stateless; the map's
-    cache (utils.dm_journal_cache) carries the cursor between reads."""
+    """read_dm_journal -> (lines | None, cursor, why). Stateless; a caller
+    carries the cursor between reads (none in the inbox path since the cut)."""
     NOW = 1795003600.0
 
     def _runner(self, proc=None, exc=None):

@@ -15,8 +15,9 @@ envelope here. The witness keeps, in a bounded in-memory ring, ids only:
 
 Never text, never a position, never a key. PKI envelopes are skipped and
 COUNTED, never an error (Q5). A broadcast envelope is counted, never
-decrypted. No own-node id is needed or inferred: our radio's own ack is
-"someone else" because its ``from`` is not the DM's destination.
+decrypted. No own-node id is inferred here: a DM to our own radio is
+judged from the DM's own uplinked header (``tx_from``) or from the id an
+existing connection read (``utils.own_radio``) -- never from an ack (r4 #1).
 
 Thread-safe: the MQTT thread writes, the HTTP thread reads ``snapshot()``.
 """
@@ -24,10 +25,10 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.dm_delivery import RoutingReply, Witness
+from utils.dm_delivery import ACK_RING_S, RoutingReply, Witness
 from utils.safe_import import safe_import
 
 _mqtt_pb2, _HAS_MQTT_PB = safe_import("meshtastic.protobuf.mqtt_pb2")
@@ -35,13 +36,13 @@ _mqtt_pb2, _HAS_MQTT_PB = safe_import("meshtastic.protobuf.mqtt_pb2")
 BROADCAST = 0xFFFFFFFF
 #: Ring bounds. ~13 log lines/min on a busy box; routing replies are a small
 #: fraction. 24 h / 4000 is headroom, not a measurement.
-RING_WINDOW_S = 24 * 3600
+RING_WINDOW_S = ACK_RING_S
 RING_CAP = 4000
 TX_CAP = 4000
 #: Counters, closed vocabulary (hfm #7) -- observe before alarm (Q8).
 COUNTERS = ("envelopes", "broadcast", "pki_skipped", "unparseable",
             "decrypt_failed", "decrypted", "routing", "routing_unparseable",
-            "other_gateway_copy")
+            "other_gateway_copy", "tx_from_conflict", "reply_evicted", "decode_error")
 
 
 class AckWitness:
@@ -49,10 +50,16 @@ class AckWitness:
         self._lock = threading.Lock()
         self._since: Optional[float] = None
         self._why = "the MQTT ack witness has not started"
-        self._replies: deque = deque(maxlen=RING_CAP)
+        self._replies: deque = deque()          # bounded by hand: evictions are counted
+        #: request ids in the ring -> count: a header guarding a reply is kept
+        self._reply_ids: Counter = Counter()
+        #: newest reply the ring DROPPED for room (r4 #3), None = none lost
+        self._lost_until: Optional[float] = None
         self._tx: "OrderedDict[int, int]" = OrderedDict()
         #: packet id -> its OWN ``from``, from the sender's own uplink (r3 #1:
-        #: a DM to our own radio is decided from the DM, never from an ack)
+        #: a DM to our own radio is decided from the DM, never from an ack).
+        #: First writer wins (r4 #1: a same-id envelope never overwrites it),
+        #: and it outlives ``_tx`` while a reply for it is in the ring.
         self._tx_from: Dict[int, int] = {}
         self._channels: Dict[str, float] = {}
         #: channels on which the DEFAULT key opened something (r2 #4: "seen"
@@ -105,24 +112,29 @@ class AckWitness:
                 self._counts["broadcast"] += 1
                 return
             # "sent N×" counts only the SENDER's own uplink of its packet
-            # (gateway == from). A bridged/other gateway's copy is the same
-            # transmission heard elsewhere -- r1 F6.
-            if pid and gateway == f"!{frm:08x}":
+            # (gateway == from, compared as NUMBERS -- r4 #8). A bridged/other
+            # gateway's copy is the same transmission heard elsewhere -- r1 F6.
+            if pid and _gateway_num(gateway) == frm:
                 self._tx[pid] = self._tx.pop(pid, 0) + 1
-                self._tx_from[pid] = frm
+                first = self._tx_from.setdefault(pid, frm)
+                if first != frm:
+                    self._counts["tx_from_conflict"] += 1
                 while len(self._tx) > TX_CAP:
                     old, _ = self._tx.popitem(last=False)
-                    self._tx_from.pop(old, None)
+                    if not self._reply_ids.get(old):
+                        self._tx_from.pop(old, None)
             elif pid:
                 self._counts["other_gateway_copy"] += 1
             if pki:
                 self._counts["pki_skipped"] += 1
                 return
-        from utils.meshtastic_se_crypto import decode_service_envelope
         try:
+            from utils.meshtastic_se_crypto import decode_service_envelope
             dp = decode_service_envelope(payload)
         except Exception:
-            dp = None
+            # a library fault, never "key not held" (r4 #4)
+            self._bump("decode_error")
+            return
         if dp is None:
             self._bump("decrypt_failed")
             return
@@ -140,7 +152,18 @@ class AckWitness:
             return
         with self._lock:
             self._counts["routing"] += 1
-            self._replies.append(RoutingReply(t, int(dp.from_node), int(dp.request_id), err))
+            if len(self._replies) >= RING_CAP:
+                old = self._replies.popleft()
+                self._counts["reply_evicted"] += 1
+                self._lost_until = max(old.t, self._lost_until or old.t)
+                self._reply_ids[old.request_id] -= 1
+                if self._reply_ids[old.request_id] <= 0:
+                    del self._reply_ids[old.request_id]
+                    if old.request_id not in self._tx:
+                        self._tx_from.pop(old.request_id, None)
+            rid = int(dp.request_id)
+            self._replies.append(RoutingReply(t, int(dp.from_node), rid, err))
+            self._reply_ids[rid] += 1
 
     def _bump(self, k: str) -> None:
         with self._lock:
@@ -154,13 +177,30 @@ class AckWitness:
         with self._lock:
             floor = t - RING_WINDOW_S
             replies = [r for r in self._replies if r.t >= floor]
-            return {"witness": Witness(self._since, self._why),
+            if not _HAS_MQTT_PB:
+                # r4 #4: every envelope would be "unparseable" -- blind, said
+                w = Witness(None, "this box cannot decode MQTT envelopes "
+                                  "(meshtastic protobuf not installed)")
+            else:
+                w = Witness(self._since, self._why, self._lost_until)
+            return {"witness": w,
                     "replies": replies,
                     "tx": dict(self._tx),
                     "tx_from": dict(self._tx_from),
                     "channels": dict(self._channels),
                     "decrypted": dict(self._decrypted),
                     "counts": dict(self._counts)}
+
+
+def _gateway_num(gateway: str) -> Optional[int]:
+    """``!6201ce25`` (any case) -> its number; anything else -> None."""
+    g = gateway.strip()
+    if len(g) != 9 or not g.startswith("!"):
+        return None
+    try:
+        return int(g[1:], 16)
+    except ValueError:
+        return None
 
 
 _WITNESS: Optional[AckWitness] = None

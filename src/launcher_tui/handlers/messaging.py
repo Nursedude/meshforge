@@ -512,6 +512,9 @@ def dm_delivery_lines(fetched) -> list:
     if doc is None:
         return [f"UNKNOWN — map daemon not reachable ({why}); DM delivery is "
                 f"judged by the map's ack witness, not shown without it"]
+    if not isinstance(doc, dict):
+        # Fable r4 #6: a 200 whose JSON is not an object is not an inbox
+        return [f"UNKNOWN — the map answered with a {type(doc).__name__}, not an inbox"]
     if doc.get("state") != "ok":
         return [f"UNKNOWN — inbox unavailable: {doc.get('error') or doc.get('state')}"]
     out = []
@@ -534,9 +537,12 @@ def dm_delivery_lines(fetched) -> list:
     sends.sort(key=lambda x: x[0], reverse=True)
     out.append("")
     for ts, partner, m in sends[:DM_DELIVERY_SHOWN]:
-        d = m.get("delivery") or {}
-        verdict = d.get("detail") or {
-            "not_sent": "NOT SENT"}.get(m.get("state"), "no delivery verdict (sent without a radio id)")
+        d = m.get("delivery")
+        if isinstance(d, dict) and d:
+            verdict = d.get("detail") or "UNKNOWN — delivery verdict malformed (no detail)"
+        else:
+            verdict = {"not_sent": "NOT SENT"}.get(
+                m.get("state"), "no delivery verdict (sent without a radio id)")
         text = (m.get("content") or "")[:20]
         out.append(f"{str(ts)[:16].replace('T', ' '):<16} → {partner:<10} "
                    f"{text!r:<24} {verdict}")

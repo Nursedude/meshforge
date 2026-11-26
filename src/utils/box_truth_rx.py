@@ -451,8 +451,9 @@ def read_dm_journal(runner: Callable[..., Any], *, since: float, now: float,
     With ``cursor``: only lines AFTER it (a resume); else ``since`` .. now,
     capped at ``DM_READ_MAX_S``. ``lines == []`` = READ and held nothing.
     ``lines is None`` = could not be read, ``why`` says so -- unreadable is
-    never empty (hfm #1). Stateless: the caller keeps the cursor (the map's
-    ``utils.dm_journal_cache``); the rx_heard ring is never touched. No
+    never empty (hfm #1). Stateless: the caller keeps the cursor (no caller
+    in MeshForge since the slice-1 journal cut, 2026-11-25); the rx_heard
+    ring is never touched. No
     ``-q``: it would hide journalctl's no-access hint."""
     argv = ["journalctl", "-u", unit, "-o", "short-unix", "--no-pager", "--show-cursor"]
     if cursor:

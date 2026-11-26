@@ -1012,8 +1012,9 @@ def keep_dm(items: List[tuple], now: Optional[float] = None) -> None:
 def kept_dm(sends: List[tuple]) -> "tuple[Dict[int, Dict[str, Any]], int]":
     """``({message_id: verdict dict}, refused)`` for ``[(message_id,
     packet_id)]`` -- only rows whose packet id matches. A row no writer here
-    can have stored is LEFT OUT and counted (hfm #3, #9). Raises on a store
-    error."""
+    can have stored is LEFT OUT, counted and DELETED (hfm #3, #9; Fable r4
+    #2: a refused row left in place blocked every later verdict for that
+    send and warned on every read). Raises on a store error."""
     if not sends:
         return {}, 0
     finals = _dm_final_states()
@@ -1030,14 +1031,17 @@ def kept_dm(sends: List[tuple]) -> "tuple[Dict[int, Dict[str, Any]], int]":
             if not _dm_row_ok(r["state"], r["detail"], r["reason"], r["said_by"],
                               r["latency_s"], finals):
                 refused += 1
+                conn.execute("DELETE FROM dm_kept WHERE message_id = ? AND packet_id = ?",
+                             (mid, pid))
                 continue
             n = r["sent_n"]
             out[mid] = {"state": r["state"], "detail": r["detail"], "reason": r["reason"],
                         "said_by": r["said_by"], "latency_s": r["latency_s"],
                         "sent_n": n if isinstance(n, int) and n >= 0 else 0}
         if refused:
-            logger.warning("dm_kept: %d row(s) no writer can have stored were left out",
-                           refused)
+            conn.commit()
+            logger.warning("dm_kept: %d row(s) no writer can have stored were "
+                           "left out and removed", refused)
         return out, refused
     finally:
         conn.close()

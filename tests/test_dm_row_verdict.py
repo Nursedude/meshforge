@@ -19,7 +19,7 @@ from utils.dm_delivery import (  # noqa: E402
     ROW_STATES, WAITING_S, RoutingReply, Send, Witness, row_verdict,
 )
 
-ME = 0x6201CE25          # the sender box's radio -- never told to the judge
+ME = 0x6201CE25          # the sender box's radio -- the judge learns it from the DM's header
 P5 = 0xB03DA894          # the 0-hop test node
 FAR = 0x514EAE28         # the 1-hop node
 RELAY = 0xD8
@@ -28,7 +28,7 @@ LIVE = Witness(since=T0 - 3600, why="")
 
 
 def _row(pid, dest=P5, t=T0):
-    return Send(t=t, packet_id=pid, dest=dest)
+    return Send(t=t, packet_id=pid, dest=dest, sender=ME)  # r4 #1: the DM's own uplinked header rules out a self-DM
 
 
 def _ack(dt, sender, pid, err="NONE"):

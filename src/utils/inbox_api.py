@@ -355,7 +355,7 @@ def _dm_sends(threads: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[
 def _verdict_dict(v, kept: bool) -> Dict[str, Any]:
     return {"state": v.state, "detail": v.detail, "reason": v.reason,
             "said_by": v.said_by, "why": v.why, "latency_s": v.latency_s,
-            "late": v.late, "sent_n": v.sent_n, "kept": kept}
+            "late": v.late, "sent_n": v.sent_n, "kept": kept, "hints": list(v.hints)}
 
 
 def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Optional[str]]:
@@ -367,8 +367,9 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     any witness is said on the row and in ``delivery_error``, never a 503 and
     never an absent field (hfm #1, #9). Returns (witness line, error)."""
     from commands import messaging as store
-    from utils import dm_ack_witness, dm_delivery as dd
+    from utils import dm_ack_witness, dm_delivery as dd, own_radio
     now = time.time()
+    own = own_radio.own_node()
     errors: List[str] = []
     snap = dm_ack_witness.get_witness().snapshot(now=now)
     sends = _dm_sends(threads)
@@ -407,13 +408,20 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     keep = []
     for t, m, sent in todo:
         v = dd.row_verdict(dd.Send(sent, m["packet_id"], t.get("partner"),
-                                   sender=(snap.get("tx_from") or {}).get(m["packet_id"])),
+                                   sender=(snap.get("tx_from") or {}).get(m["packet_id"]),
+                                   own=own),
                            snap["replies"], snap["witness"],
                            tx_seen=snap["tx"].get(m["packet_id"], 0), now=now)
         if "delivery" in m and not (v.state == dd.ROW_DELIVERED or (
                 v.state == dd.ROW_FAILED and v.said_by in dd.TERMINAL_SAID_BY
                 and m["delivery"].get("said_by") not in dd.TERMINAL_SAID_BY)):
-            continue          # a kept failure stands until something outranks it
+            # a kept failure stands until something outranks it; its tail
+            # (hints, "sent N×") is the LIVE one, never frozen (r4 #5)
+            k = m["delivery"]
+            k["sent_n"] = max(k.get("sent_n") or 0, v.sent_n)
+            k["hints"] = list(v.hints)
+            k["detail"] += "".join(f" · {h}" for h in v.hints) + dd.sent_suffix(k["sent_n"])
+            continue
         d = _verdict_dict(v, kept=False)
         if v.state not in dd.ROW_FINAL_STATES:
             if kept_why:
@@ -424,7 +432,8 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
                                 f"here (key not held)")
         m["delivery"] = d
         if v.state in dd.ROW_FINAL_STATES:
-            keep.append((m["id"], m["packet_id"], d))
+            # the store keeps the bare verdict; the tail is rebuilt live
+            keep.append((m["id"], m["packet_id"], {**d, "detail": v.base or v.detail}))
     if keep:
         try:
             store.keep_dm(keep, now=now)
@@ -432,7 +441,8 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
             logger.warning("inbox: DM verdicts not kept: %s", e)
             errors.append(f"DM verdicts not kept: {type(e).__name__}: {e}")
     late_acks = sum(1 for _, m in sends if (m.get("delivery") or {}).get("late"))
-    return _witness_line(snap, now, late_acks), ("; ".join(errors) or None)
+    return _witness_line(snap, now, late_acks, own_radio.own_node_status()), \
+        ("; ".join(errors) or None)
 
 
 #: The PKI topic carries DM BODIES (curve25519), never a channel-keyed ack:
@@ -453,7 +463,8 @@ def _unreadable_channels(snap: Dict[str, Any], now: float) -> List[str]:
             if c not in opened and c != PKI_TOPIC]
 
 
-def _witness_line(snap: Dict[str, Any], now: float, late_acks: int) -> Dict[str, Any]:
+def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
+                  own: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Q19: name what the witness covers, MEASURED: a channel counts as
     visible only once the default key opened something on it (Fable r2 #4 --
     "seen" was presence, not function)."""
@@ -469,9 +480,19 @@ def _witness_line(snap: Dict[str, Any], now: float, late_acks: int) -> Dict[str,
         line = f"DM acks: witness listening, but nothing decrypted here in the last {mins} min"
     if w.since is not None and unreadable:
         line += f" · seen but unreadable (key not held): {', '.join(unreadable)}"
+    dec_err = (snap.get("counts") or {}).get("decode_error") or 0
+    if dec_err:
+        # r4 #4: a library fault is not a missing key
+        line += f" · {dec_err} envelope(s) failed to decode (a library fault, not the key)"
+    num = (own or {}).get("num")
+    # r4 #1: what rules out a DM to this box's own radio, said
+    line += (f" · own radio id: !{num:08x} (from {own.get('source') or 'a connection'})"
+             if num is not None else
+             " · own radio id: unknown (a DM to it is ruled out only by its uplinked header)")
     return {"acks_visible": w.since is not None, "since": w.since, "why": w.why,
             "channels": visible, "unreadable": unreadable, "counts": snap["counts"],
-            "late_acks": late_acks, "line": line}
+            "late_acks": late_acks, "own_id": None if num is None else f"!{num:08x}",
+            "line": line}
 
 
 #: what a send says when the fleet evidence itself could not be read
