@@ -90,3 +90,15 @@ OVERRIDE the rows above where they differ):
 - Custom channel keys (operator decision).
 - Bridged legs mesh ↔ RNS (BIC-2's other half; own groundwork).
 - MeshAnchor port (after MF acceptance).
+
+## 4c. Build-time decisions — slice 1 (2026-11-25 16:3x–17:3x HST, Opus 5.5)
+
+| # | Decision | Why |
+|---|---|---|
+| B1 | **Parser shared, read local** (operator, AskUserQuestion): `box_truth_rx.parse_dm_journal` is the ONE allowlisted parser (byte-identical MF/MA); the SENDER box runs a stateless bounded `journalctl --since` from the inbox read. Q10′'s "extend the ring" is superseded. | The rx_heard ring advances only when the center pulls a box over ssh — a box's own DM verdict would depend on the center being up (against Q4), and extending it changes the export the center reads. |
+| B2 | Journal lines anchored on the message PREFIX (`meshtasticd[-…][pid]: LEVEL \| HH:MM:SS uptime [Thread]`), never a substring. | A received text whose body spells `Alloc an err=…idFrom=<my id>` must never fail my DM (forged-line test). |
+| B3 | ONE `+` subscription when `ack_witness` is on; the old encrypted handler still gets only its configured channel. | Widening the old handler would change node discovery + text decrypt on every channel — not this slice. |
+| B4 | A kept **relay** NAK is NOT terminal: shown as kept, still judged live, a destination ack replaces it. Destination / own-radio failures are terminal. | Found by its own test: the first cut never re-judged a kept failure. |
+| B5 | The TUI view reads the map's loopback `/api/inbox`; unreachable = UNKNOWN. | The witness is the MAP's in-memory ring; the TUI process cannot see it. |
+| B6 | A send stamped > 60 s in the future → `no_ack_seen` "clock went backward", never `waiting` forever (hfm #6). | — |
+| B7 | Journal read cost MEASURED on VolcanoAI (warm, n=1 each): 10 min 13 ms · 1 h 18 ms · 6 h 68 ms (5224 lines); page polls every 10 s. moc5 (smallest) NOT measured. | Every poll re-reads back to the oldest unsettled DM (cap 6 h). |

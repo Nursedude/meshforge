@@ -45,6 +45,7 @@ class MessagingHandler(BaseHandler):
                 ("live", "Live Feed           Real-time message stream"),
                 ("messages", "View Messages       Recent message history"),
                 ("convos", "Conversations       Message threads by node"),
+                ("dmdeliv", "DM Delivery         Did my DMs arrive?"),
                 ("stats", "Statistics          Message counts & rates"),
                 ("rx", "RX Control          Start/stop listener"),
                 ("diagnose", "Diagnose            Check messaging health"),
@@ -67,6 +68,7 @@ class MessagingHandler(BaseHandler):
                 "live": ("Live Feed", self._messaging_live_feed),
                 "messages": ("View Messages", self._messaging_view),
                 "convos": ("Conversations", self._messaging_conversations),
+                "dmdeliv": ("DM Delivery", self._messaging_dm_delivery),
                 "stats": ("Statistics", self._messaging_stats),
                 "rx": ("RX Control", self._messaging_rx_control),
                 "diagnose": ("Diagnose", self._messaging_diagnose),
@@ -221,6 +223,14 @@ class MessagingHandler(BaseHandler):
                 content = content[:27] + "..."
             print(f"  {ts:<20} {from_id:<12} {to_id:<12} {net:<6} {content}")
 
+        print()
+        self.ctx.wait_for_enter()
+
+    def _messaging_dm_delivery(self):
+        clear_screen()
+        print("=== DM Delivery ===\n")
+        for line in dm_delivery_lines(_fetch_inbox()):
+            print(f"  {line}")
         print()
         self.ctx.wait_for_enter()
 
@@ -465,3 +475,58 @@ def _listener_line(timeout: float = 3.0) -> str:
     if str(st.get("subscription") or "").startswith("mqtt"):
         line += " — MQTT uplink only: a channel without uplink never reaches the inbox"
     return line
+
+
+INBOX_URL = "http://127.0.0.1:5000/api/inbox"
+#: Newest outbound DMs shown -- the screen is a glance, the web page the list.
+DM_DELIVERY_SHOWN = 15
+
+
+def _fetch_inbox(timeout: float = 5.0):
+    """(doc, None) from the map daemon that runs the ack witness, or (None,
+    why). The witness lives in the MAP's process: the TUI never judges."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(INBOX_URL, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace")), None
+    except (OSError, ValueError) as e:
+        return None, f"{e.__class__.__name__}"
+
+
+def dm_delivery_lines(fetched) -> list:
+    """BIC-2 DM slice 1: the same per-DM verdict the web /inbox shows, read
+    from the map. Unreachable / unavailable is UNKNOWN, never "no DMs"."""
+    doc, why = fetched
+    if doc is None:
+        return [f"UNKNOWN — map daemon not reachable ({why}); DM delivery is "
+                f"judged by the map's ack witness, not shown without it"]
+    if doc.get("state") != "ok":
+        return [f"UNKNOWN — inbox unavailable: {doc.get('error') or doc.get('state')}"]
+    out = []
+    w = doc.get("dm_witness") or {}
+    out.append(w.get("line") or "DM acks: UNKNOWN — the map sent no witness line")
+    if w.get("late_acks"):
+        out.append(f"{w['late_acks']} ack(s) arrived after the waiting window "
+                   f"(the window may be too short)")
+    if doc.get("delivery_error"):
+        out.append(f"⚠ {doc['delivery_error']}")
+    sends = [(m.get("ts") or "", t.get("partner") or "?", m)
+             for t in doc.get("threads") or [] if t.get("kind") == "dm"
+             for m in t.get("messages") or []
+             if m.get("direction") == "out"]
+    if not sends:
+        out.append("No DMs sent from this box yet.")
+        return out
+    sends.sort(key=lambda x: x[0], reverse=True)
+    out.append("")
+    for ts, partner, m in sends[:DM_DELIVERY_SHOWN]:
+        d = m.get("delivery") or {}
+        verdict = d.get("detail") or {
+            "not_sent": "NOT SENT"}.get(m.get("state"), "no delivery verdict (sent without a radio id)")
+        text = (m.get("content") or "")[:20]
+        out.append(f"{str(ts)[:16].replace('T', ' '):<16} → {partner:<10} "
+                   f"{text!r:<24} {verdict}")
+    if len(sends) > DM_DELIVERY_SHOWN:
+        out.append(f"… {len(sends) - DM_DELIVERY_SHOWN} older — see /inbox")
+    return out

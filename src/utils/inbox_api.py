@@ -14,6 +14,7 @@ Honesty rules this module keeps (honest_failure_modes #1, #2):
 """
 import logging
 import re
+import subprocess
 import time
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -322,6 +323,7 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
         era, era_error = 0, f"era unreadable: {e}"
     threads = build_threads(rows, era=era)
     heard_error = _attach_heard(threads)
+    dm_witness, delivery_error = _attach_delivery(threads)
     # hfm #9 witness: sends whose verdict aged out of a box's ring before
     # any read kept it (the "freeze on read" gap, operator 11-23)
     shown = sum(t["count"] for t in threads)
@@ -333,7 +335,122 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
             "shown_count": shown, "folded_count": len(rows) - shown,
             "rx": rx, **({"unseen": unseen} if unseen is not None else {}),
             **({"era_error": era_error} if era_error else {}),
-            **({"heard_error": heard_error} if heard_error else {})}
+            **({"heard_error": heard_error} if heard_error else {}),
+            "dm_witness": dm_witness,
+            **({"delivery_error": delivery_error} if delivery_error else {})}
+
+
+#: The witness line names channels seen on the broker this recently (Q19).
+DM_CHANNELS_RECENT_S = 30 * 60
+
+
+def _dm_sends(threads: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """(thread, message) for every outbound Meshtastic DM the radio took."""
+    return [(t, m) for t in threads
+            if t.get("network") == "meshtastic" and t.get("kind") == "dm"
+            for m in t["messages"]
+            if m.get("direction") == "out" and m.get("packet_id") is not None
+            and m.get("state") in ("handed_off", "radio_echo")]
+
+
+def _verdict_dict(v, kept: bool) -> Dict[str, Any]:
+    return {"state": v.state, "detail": v.detail, "reason": v.reason,
+            "said_by": v.said_by, "why": v.why, "latency_s": v.latency_s,
+            "late": v.late, "sent_n": v.sent_n, "possible_ack": v.possible_ack,
+            "kept": kept}
+
+
+def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Optional[str]]:
+    """BIC-2 DM slice 1: every outbound DM with a radio id carries
+    ``delivery`` -- exactly ONE of ``dm_delivery.ROW_STATES`` (design §1 +
+    §4b). Settled verdicts come from the store (kept across a map restart);
+    the rest are judged now from this process's ``/e/`` witness and THIS
+    box's journal, read only when something is unsettled. A failure of any
+    witness is said on the row and in ``delivery_error``, never a 503 and
+    never an absent field (hfm #1, #9). Returns (witness line, error)."""
+    from commands import messaging as store
+    from utils import box_truth_rx, dm_ack_witness, dm_delivery as dd
+    now = time.time()
+    errors: List[str] = []
+    snap = dm_ack_witness.get_witness().snapshot(now=now)
+    sends = _dm_sends(threads)
+    kept: Dict[int, Dict[str, Any]] = {}
+    if sends:
+        try:
+            kept, refused = store.kept_dm([(m["id"], m["packet_id"]) for _, m in sends])
+            if refused:
+                errors.append(f"{refused} kept delivery row(s) refused")
+        except Exception as e:
+            logger.warning("inbox: kept DM verdicts unreadable: %s", e)
+            errors.append(f"kept DM verdicts unreadable: {type(e).__name__}: {e}")
+    todo = []
+    for t, m in sends:
+        k = kept.get(m["id"])
+        if k is not None:
+            late = k.get("latency_s") is not None and k["latency_s"] > dd.WAITING_S
+            m["delivery"] = {**k, "why": "", "late": late, "sent_n": 0,
+                             "possible_ack": False, "kept": True}
+            # Terminal: delivered, or a failure the destination / our radio
+            # said. A RELAY's NAK is not the destination's answer: keep
+            # judging live, and a later destination ack replaces it.
+            if k["state"] != dd.ROW_FAILED or k.get("said_by") in dd.TERMINAL_SAID_BY:
+                continue
+        sent = _epoch(m.get("ts"))
+        if sent is None:
+            if "delivery" in m:
+                continue
+            m["delivery"] = {"state": dd.ROW_NO_ACK, "why": "send time unreadable",
+                             "detail": "no ack seen: send time unreadable",
+                             "kept": False}
+            continue
+        todo.append((t, m, sent))
+    journal: List[Any] = []
+    journal_why = None
+    if todo:
+        journal, journal_why = box_truth_rx.read_dm_journal(
+            subprocess.run, since=min(s for _, _, s in todo) - 2, now=now)
+        if journal_why:
+            errors.append(journal_why)
+            journal = []
+    keep = []
+    for t, m, sent in todo:
+        v = dd.row_verdict(dd.Send(sent, m["packet_id"], t.get("partner")),
+                           snap["replies"], snap["witness"], journal=journal,
+                           tx_seen=snap["tx"].get(m["packet_id"], 0), now=now)
+        if "delivery" in m and v.state != dd.ROW_DELIVERED:
+            continue          # a kept relay NAK stands until the destination answers
+        d = _verdict_dict(v, kept=False)
+        if journal_why and v.state not in dd.ROW_FINAL_STATES:
+            d["detail"] += f" · {journal_why} (our radio's refusals unseen)"
+        m["delivery"] = d
+        if v.state in dd.ROW_FINAL_STATES:
+            keep.append((m["id"], m["packet_id"], d))
+    if keep:
+        try:
+            store.keep_dm(keep, now=now)
+        except Exception as e:
+            logger.warning("inbox: DM verdicts not kept: %s", e)
+            errors.append(f"DM verdicts not kept: {type(e).__name__}: {e}")
+    late_acks = sum(1 for _, m in sends if (m.get("delivery") or {}).get("late"))
+    return _witness_line(snap, now, late_acks), ("; ".join(errors) or None)
+
+
+def _witness_line(snap: Dict[str, Any], now: float, late_acks: int) -> Dict[str, Any]:
+    """Q19: name what the witness covers, measured from the broker."""
+    w = snap["witness"]
+    recent = sorted(c for c, ts in snap["channels"].items()
+                    if now - ts <= DM_CHANNELS_RECENT_S)
+    if w.since is None:
+        line = f"DM acks: not visible — {w.why}"
+    elif recent:
+        line = (f"DM acks visible on: {', '.join(recent)} — seen here in the last "
+                f"{DM_CHANNELS_RECENT_S // 60} min")
+    else:
+        line = (f"DM acks: witness listening, but no channel seen here in the last "
+                f"{DM_CHANNELS_RECENT_S // 60} min")
+    return {"acks_visible": w.since is not None, "since": w.since, "why": w.why,
+            "channels": recent, "counts": snap["counts"], "late_acks": late_acks,
+            "line": line}
 
 
 #: what a send says when the fleet evidence itself could not be read

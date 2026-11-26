@@ -43,6 +43,7 @@ main{display:grid;grid-template-columns:minmax(240px,320px) 1fr;height:calc(100%
 .msg.out{align-self:flex-end;background:var(--out)}
 .meta{display:block;font-size:.72rem;color:var(--muted);margin-top:3px;white-space:normal}
 .st-handed_off{color:var(--warn)} .st-radio_echo{color:var(--muted)} .st-not_sent{color:var(--bad)} .st-received{color:var(--muted)} .st-unknown{color:var(--bad)} .heard{color:var(--muted)}
+.dl-delivered{color:var(--ok)} .dl-failed{color:var(--bad)} .dl-left_unconfirmed{color:var(--warn)} .dl-waiting{color:var(--muted)} .dl-no_ack_seen{color:var(--warn)} .dl-unknown{color:var(--unk)}
 #empty{color:var(--muted);margin:auto;text-align:center;padding:24px}
 form{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--rule);background:var(--panel)}
 textarea{flex:1;min-width:0;resize:none;height:44px;padding:10px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);color:inherit;font:inherit}
@@ -113,6 +114,8 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
   var STATE = { handed_off: "handed to radio · unconfirmed", radio_echo: "radio took it (uplink echo) · airtime unconfirmed", not_sent: "NOT SENT", received: "" };
   // CLOSED map (INBOX-T F11): a state this page does not know says so — it is
   // never rendered as nothing (which reads as "fine").
+  // closed vocabulary: utils.dm_delivery.ROW_STATES (pinned by test)
+  var DELIVERY = { delivered: 1, failed: 1, left_unconfirmed: 1, waiting: 1, no_ack_seen: 1 };
   function stateLabel(s) {
     return Object.prototype.hasOwnProperty.call(STATE, s) ? STATE[s] : "state unknown";
   }
@@ -165,9 +168,15 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
       meta.append(document.createTextNode(when(m.ts)));
       if (m.direction === "in" && t.kind === "channel") meta.append(document.createTextNode(" · " + m.from_id));
       if (m.snr != null) meta.append(document.createTextNode(" · SNR " + m.snr));
-      var label = stateLabel(m.state);
-      if (label) meta.append(document.createTextNode(" · "),
-        el("span", Object.prototype.hasOwnProperty.call(STATE, m.state) ? "st-" + m.state : "st-unknown", label));
+      // BIC-2 DM slice 1: a DM's ONE delivery state replaces the hand-off label
+      if (m.delivery && m.delivery.detail) {
+        var dk = Object.prototype.hasOwnProperty.call(DELIVERY, m.delivery.state) ? m.delivery.state : "unknown";
+        meta.append(document.createTextNode(" · "), el("span", "dl-" + dk, m.delivery.detail));
+      } else {
+        var label = stateLabel(m.state);
+        if (label) meta.append(document.createTextNode(" · "),
+          el("span", Object.prototype.hasOwnProperty.call(STATE, m.state) ? "st-" + m.state : "st-unknown", label));
+      }
       // BIC-2: which fleet radios DECODED this packet — a hearing, not a reader
       if (m.heard && m.heard.line) meta.append(document.createTextNode(" · "), el("span", "heard", m.heard.line));
       b.appendChild(meta);
@@ -237,6 +246,8 @@ header button{border:1px solid var(--accent);background:none;color:var(--accent)
           var blindBits = [];
           if (res.j.heard_error) blindBits.push("heard-by unreadable: " + res.j.heard_error);
           if (res.j.era_error) blindBits.push("duplicate fold limited: " + res.j.era_error);
+          if (res.j.delivery_error) blindBits.push("DM delivery: " + res.j.delivery_error);
+          if (res.j.dm_witness && res.j.dm_witness.line) blindBits.push(res.j.dm_witness.line);
           $("status").textContent = threads.length + " conversations · updated " + new Date().toLocaleTimeString() +
             (blindBits.length ? " · " + blindBits.join(" · ") : "");
         } else if (res.status === 403) {

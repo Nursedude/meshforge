@@ -134,6 +134,9 @@ ROW_STATES = (ROW_DELIVERED, ROW_FAILED, ROW_LEFT_UNCONFIRMED, ROW_WAITING,
 #: still flips the row and is marked ``late`` -- the caller counts those as
 #: the witness that this is too short. Re-derive after a soak.
 WAITING_S = 60
+#: hfm #6: a send stamped further ahead of now than this is a clock step,
+#: never "waiting" (which would then last until the clock caught up).
+CLOCK_SLOP_S = 60
 
 #: mesh.proto ``Routing.Error`` at firmware 54e0d8d (pinned by test).
 _ROUTING_ERRORS = {
@@ -226,6 +229,8 @@ def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
         why = witness.why or "this box cannot see delivery acks"
     elif witness.since > send.t:
         why = "witness started after this send"
+    elif now - send.t < -CLOCK_SLOP_S:
+        why = "this box's clock went backward since the send (it is stamped in the future)"
     elif now - send.t < WAITING_S:
         return RowVerdict(ROW_WAITING,
                           f"waiting — {int(now - send.t)} s of {WAITING_S} s"
@@ -248,3 +253,9 @@ def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
                "uplink the channel the ack came on); " + why)
     return RowVerdict(ROW_NO_ACK, f"no ack seen: {why}" + _sent(sent_n),
                       why=why, sent_n=sent_n, possible_ack=possible)
+
+#: The states a row can settle in -- the only ones the store keeps.
+ROW_FINAL_STATES = (ROW_DELIVERED, ROW_FAILED)
+#: A ``failed`` from these is the end; a relay's NAK can still be overtaken
+#: by the destination's own ack (the destination outranks a relay).
+TERMINAL_SAID_BY = ("the destination", "our radio")

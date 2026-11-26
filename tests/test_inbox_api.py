@@ -117,6 +117,8 @@ def test_empty_store_is_ok_with_zero_threads():
                       return_value=CommandResult.ok("0", data={"messages": []})):
         out = inbox_api.read_inbox()
     out.pop("rx")  # receive coverage, pinned by its own tests below
+    # BIC-2 DM slice 1: the ack witness line rides EVERY read (blind or not)
+    assert out.pop("dm_witness")["line"]
     # the downlink-gap witness rides only where the page reads MQTT (no listener here)
     assert "unseen" not in out
     assert out == {"state": "ok", "threads": [], "message_count": 0,

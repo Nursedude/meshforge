@@ -216,3 +216,17 @@ class TestVocabulary:
 
     def test_unknown_error_code_is_named_not_dropped(self):
         assert routing_error_name(77) == "err=77"
+
+
+class TestClock:
+    """hfm #6: RTC-less Pis, NTP steps -- a backward step must not hold a
+    row in 'waiting' forever."""
+
+    def test_send_stamped_in_the_future_is_said_not_waiting(self):
+        s = _row(0xAB3C8AC4, t=T0 + 3600)
+        v = row_verdict(s, [], LIVE, now=T0)
+        assert v.state == ROW_NO_ACK and "clock" in v.why
+
+    def test_small_skew_is_still_waiting(self):
+        s = _row(0xAB3C8AC4, t=T0 + 2)
+        assert row_verdict(s, [], LIVE, now=T0).state == ROW_WAITING
