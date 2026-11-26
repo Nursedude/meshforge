@@ -397,6 +397,8 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
 
             # Subscribe to topics based on configured regions
             self._subscribe_topics()
+            if self._config.get("ack_witness"):
+                self._ack_witness().started()
         else:
             error_msgs = {
                 1: "Incorrect protocol version",
@@ -429,6 +431,8 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
     def _on_disconnect(self, client, userdata, rc):
         """MQTT disconnection callback."""
         self._connected = False
+        if self._config.get("ack_witness"):
+            self._ack_witness().stopped(f"MQTT disconnected (rc={rc})")
 
         if rc != 0:
             reason = f"unexpected_rc_{rc}"
@@ -487,6 +491,18 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
             _mqtt_circuit.record_failure(cb_dest, "reconnect_failed")
             delay = min(delay * 1.5, max_delay)
 
+    @staticmethod
+    def _ack_witness():
+        from utils.dm_ack_witness import get_witness
+        return get_witness()
+
+    def _is_own_enc_channel(self, topic: str) -> bool:
+        """``{root}/{channel}/...`` for the configured channel -- what the
+        encrypted leg subscribed to before the ack witness widened it."""
+        root = self._config.get("root_topic", DEFAULT_ROOT_TOPIC).rstrip("/")
+        prefix = f"{root}/{self._config.get('channel', DEFAULT_CHANNEL)}/"
+        return topic.startswith(prefix)
+
     def _on_message(self, client, userdata, msg):
         """MQTT message callback."""
         try:
@@ -515,6 +531,10 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
             if "/json/" in topic:
                 self._handle_json_message(topic, payload)
             else:
+                if self._config.get("ack_witness"):
+                    self._ack_witness().observe(topic, payload)
+                    if not self._is_own_enc_channel(topic):
+                        return  # witness-only: the old handler's scope is unchanged
                 # Encrypted payload - just track node existence
                 self._handle_encrypted_message(topic, payload)
 
@@ -911,9 +931,13 @@ def create_local_subscriber(
     root_topic: str = LOCAL_ROOT_TOPIC,
     channel: str = DEFAULT_CHANNEL,
     use_tls: bool = False,
+    ack_witness: bool = False,
 ) -> MQTTNodelessSubscriber:
     """
     Create an MQTT subscriber configured for a local broker (e.g., mosquitto).
+
+    ``ack_witness`` (BIC-2 DM slice 1): feed every channel's /e/ envelope to
+    this process's ``utils.dm_ack_witness`` -- the map's inbox listener only.
 
     This is the recommended setup for multi-consumer architecture where
     meshtasticd publishes to a local broker.
@@ -932,9 +956,11 @@ def create_local_subscriber(
         subscriber.register_message_callback(my_handler)
         subscriber.start()
     """
-    return MQTTNodelessSubscriber(config=local_subscriber_config(
-        broker=broker, port=port, root_topic=root_topic, channel=channel,
-        use_tls=use_tls))
+    cfg = local_subscriber_config(broker=broker, port=port, root_topic=root_topic,
+                                  channel=channel, use_tls=use_tls)
+    if ack_witness:
+        cfg["ack_witness"] = True
+    return MQTTNodelessSubscriber(config=cfg)
 
 
 def local_subscriber_config(

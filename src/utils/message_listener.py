@@ -285,6 +285,7 @@ class MessageListener:
             self._mqtt_subscriber = create_local_subscriber(
                 broker=self.mqtt_broker,
                 port=self.mqtt_port,
+                ack_witness=True,   # BIC-2: DM delivery acks, every channel
             )
 
             # Register callback for text messages

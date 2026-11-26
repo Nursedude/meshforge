@@ -595,8 +595,13 @@ def subscriptions(cfg: Dict[str, Any],
     root = cfg.get("root_topic", default_root)
     channel = cfg.get("channel", default_channel)
     json_channel = cfg.get("json_channel", channel)
+    # BIC-2 DM slice 1: the ack witness needs EVERY channel's /e/ (acks ride
+    # the channel the destination answers on). The old encrypted handler
+    # still sees only ``channel`` -- the subscriber filters it (one topic,
+    # so a broker never delivers one envelope twice).
+    enc = "+" if cfg.get("ack_witness") else channel
     return [f"{root.rsplit('/', 1)[0]}/json/{json_channel}/#",
-            f"{root}/{channel}/#"]
+            f"{root}/{enc}/#"]
 
 
 def _legacy_port(v: Any) -> Tuple[Optional[int], Optional[str]]:

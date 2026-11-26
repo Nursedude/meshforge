@@ -49,7 +49,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 SOURCE_UNIT = "meshtasticd"
 RING_WINDOW_S = 24 * 3600
@@ -352,3 +352,79 @@ def read_rx_heard(state_path: Path, runner: Callable[..., Any], *, now: float,
                  f"{type(e).__name__} — next read repeats from the old cursor")
     return section_of(state, read=kind, lines=lines, future_dropped=len(future),
                       note=note), error
+
+
+# ---------------------------------------------------------------------------
+# BIC-2 DM slice 1 (2026-11-25): the ALLOWLISTED journal facts a DM row needs.
+# Design D-1 + operator 2026-11-25 ("parser shared, read local"): this module
+# holds the ONE parser (byte-identical MF/MA, ``parity_check``); the SENDER
+# box reads its own journal on demand -- the rx_heard ring above is untouched.
+# ---------------------------------------------------------------------------
+
+#: The start of a meshtasticd journal MESSAGE (short-unix): unit (stock or
+#: ``-patched``) + pid, level, ``| HH:MM:SS uptime``, optional ``[Thread]``.
+#: Anchored at line start, so text inside a message body -- a ``msg=`` that
+#: spells a refusal -- can never be read as one (forged-line guard).
+_DM_PREFIX = (r"\A(\d+(?:\.\d+)?) \S+ meshtasticd[\w-]*\[\d+\]: [A-Z]+ +\| "
+              r"\d{2}:\d{2}:\d{2} \d+ (?:\[\w+\] )?")
+#: MeshModule.cpp:71 (firmware 54e0d8d): our radio built an error for idFrom.
+_ALLOC_RE = re.compile(_DM_PREFIX + r"Alloc an err=(\d{1,5}),to=0x[0-9a-fA-F]{1,8},"
+                       r"idFrom=0x([0-9a-fA-F]{1,8}),id=0x[0-9a-fA-F]{1,8}\Z")
+#: ProtobufModule.h:92: a ROUTING_APP (portnum 5) packet arrived. ``id`` is
+#: the routing packet's OWN id -- no request_id at INFO -> cross-check only.
+_ROUTING_RE = re.compile(_DM_PREFIX + r"\[Router\] Received routing "
+                         r"from=0x([0-9a-fA-F]{1,8}), id=0x[0-9a-fA-F]{1,8}, "
+                         r"portnum=5, payloadlen=\d+\Z")
+
+
+class JournalLine(NamedTuple):
+    """One allowlisted journal fact, ids only. kind ``alloc_err`` carries
+    packet_id + err; kind ``routing_from`` carries sender."""
+    t: float
+    kind: str
+    packet_id: Optional[int] = None
+    sender: Optional[int] = None
+    err: Optional[int] = None
+
+
+def parse_dm_journal(text: str) -> List[JournalLine]:
+    """``journalctl -u meshtasticd -o short-unix`` text -> the DM facts, in
+    order. Every other line -- and every other field -- is dropped."""
+    out: List[JournalLine] = []
+    for line in text.splitlines():
+        m = _ALLOC_RE.match(line)
+        if m:
+            ts, err, pid = _num(float(m.group(1))), int(m.group(2)), int(m.group(3), 16)
+            if ts is not None and err and 0 < pid <= _ID_MAX:
+                out.append(JournalLine(ts, "alloc_err", packet_id=pid, err=err))
+            continue
+        m = _ROUTING_RE.match(line)
+        if m:
+            ts, frm = _num(float(m.group(1))), int(m.group(2), 16)
+            if ts is not None and 0 < frm <= _ID_MAX:
+                out.append(JournalLine(ts, "routing_from", sender=frm))
+    return out
+
+
+#: The widest window one DM read walks: the oldest unsettled send it judges,
+#: never more. A row older than this is not re-read (its settled verdict, if
+#: any, was written back to the store).
+DM_READ_MAX_S = 6 * 3600
+
+
+def read_dm_journal(runner: Callable[..., Any], *, since: float, now: float,
+                    unit: str = SOURCE_UNIT, timeout_s: float = JOURNAL_TIMEOUT_S
+                    ) -> Tuple[Optional[List[JournalLine]], Optional[str]]:
+    """THIS box's journal, ``since`` .. now, parsed by ``parse_dm_journal``.
+
+    (lines, None) on a good read -- ``[]`` means the journal was READ and held
+    nothing for these DMs. (None, why) when it could not be read: unreadable
+    is never empty (hfm #1). No cursor, no state file: a stateless bounded
+    read, so it never touches the rx_heard ring or its single writer."""
+    lo = max(float(since), now - DM_READ_MAX_S)
+    argv = ["journalctl", "-u", unit, "-o", "short-unix", "--no-pager", "-q",
+            f"--since=@{int(lo)}"]
+    rc, out, err = _journal(runner, argv, timeout_s)
+    if rc != 0:
+        return None, f"journal unreadable: {err or f'journalctl exited {rc}'}"
+    return parse_dm_journal(out), None
