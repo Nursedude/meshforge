@@ -130,7 +130,8 @@ class AckWitness:
                 self._tx[pid] = self._tx.pop(pid, 0) + 1
                 while len(self._tx) > TX_CAP:
                     old, _ = self._tx.popitem(last=False)
-                    if not self._reply_ids.get(old):
+                    # r7 #7: kept while its id is still tracked anywhere
+                    if not self._reply_ids.get(old) and old not in self._tx_order_ids:
                         self._tx_from.pop(old, None)
             elif pid:
                 self._counts["other_gateway_copy"] += 1

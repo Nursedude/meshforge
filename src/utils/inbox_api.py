@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from commands import messaging
+from utils.dm_delivery import NODE_ID_RE
 from utils.inbox_heard import JOIN_AFTER_S, KEPT_NOTE, BoxHeard
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,13 @@ RNS_SEND_BLOCKED = (
     "to the web inbox yet. Reply from the TUI (Messaging) for now."
 )
 
-_NODE_ID = re.compile(r"^![0-9a-fA-F]{1,8}$")
+#: ONE node-id pattern with the DM origin seam (Fable r7 #1, hfm #5).
+_NODE_ID = NODE_ID_RE
+
+#: Kept DM verdicts the origin seam refuted and DROPPED, this process
+#: (Fable r7 #2: a delete on unauthenticated input needs a durable witness;
+#: each is also logged at WARNING). ``{(message_id, packet_id): ts}``.
+_REFUTED: Dict[Tuple[int, int], float] = {}
 
 
 def _thread_key(msg: Dict[str, Any]) -> Tuple[str, str, Optional[str], Optional[int]]:
@@ -380,7 +387,6 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     from utils import dm_ack_witness, dm_delivery as dd, own_radio
     now = time.time()
     errors: List[str] = []
-    snap = dm_ack_witness.get_witness().snapshot(now=now)
     sends = _dm_sends(threads)
     kept: Dict[int, Dict[str, Any]] = {}
     kept_why = None
@@ -406,16 +412,21 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
             logger.warning("inbox: DM origins unreadable: %s", e)
             errors.append(f"DM origins unreadable: {type(e).__name__}: {e}")
             origins = {m["id"]: dd.OWN_UNREADABLE for _, m in sends}
+    # r7 #5: the witness snapshot is taken AFTER the store reads, so a racing
+    # reader never judges an older ring against a newer store
+    snap = dm_ack_witness.get_witness().snapshot(now=now)
     todo = []
     refuted = []
     tx_from = snap.get("tx_from") or {}
     for t, m in sends:
         k = kept.get(m["id"])
         og = dd.dm_origin(t.get("partner"), origins.get(m["id"]), tx_from.get(m["packet_id"]))
-        if (k is not None and k["state"] == dd.ROW_DELIVERED
-                and og.state in (dd.ORIGIN_SELF, dd.ORIGIN_CONFLICT)):
-            # r6 #6: a kept delivered the seam now refutes (an earlier
-            # commit's wrong keep) is dropped, counted, and judged live
+        if (k is not None and og.state in (dd.ORIGIN_SELF, dd.ORIGIN_CONFLICT)
+                and (k["state"] == dd.ROW_DELIVERED
+                     or k.get("said_by") in dd.TERMINAL_SAID_BY)):
+            # r6 #6 / r7 #6: a kept delivered -- or a failure "said by the
+            # destination" -- the seam now refutes is dropped, logged,
+            # counted, and judged live
             refuted.append((m["id"], m["packet_id"]))
             k = None
         if k is not None:
@@ -469,13 +480,18 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
             # the store keeps the bare verdict; the tail is rebuilt live
             keep.append((m["id"], m["packet_id"], {**d, "detail": v.base or v.detail}))
     if refuted:
+        logger.warning("inbox: %d kept DM verdict(s) refuted by the origin seam "
+                       "(self-DM or disagreeing sources): %s", len(refuted), refuted)
         try:
-            store.drop_dm_kept(refuted)
+            n = store.drop_dm_kept(refuted)
+            for key in refuted:
+                _REFUTED[key] = now
+            errors.append(f"{n} kept delivery row(s) refuted by the origin "
+                          "(a DM to this box's own radio, or disagreeing sources) — dropped")
         except Exception as e:
             logger.warning("inbox: refuted DM verdicts not dropped: %s", e)
-            errors.append(f"refuted DM verdicts not dropped: {type(e).__name__}: {e}")
-        errors.append(f"{len(refuted)} kept delivery row(s) refuted by the origin "
-                      "(a DM to this box's own radio, or disagreeing sources) — dropped")
+            errors.append(f"{len(refuted)} kept delivery row(s) refuted by the origin but "
+                          f"not dropped: {type(e).__name__}: {e}")
     if keep:
         try:
             store.keep_dm(keep, now=now)
@@ -533,6 +549,9 @@ def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
         line += f" · seen but unreadable ({_unreadable_cause(snap)}): {', '.join(unreadable)}"
     elif dec_err:
         line += f" · {dec_err} decode fault(s) seen (cause unknown)"
+    if _REFUTED:
+        line += (f" · {len(_REFUTED)} kept verdict(s) refuted by the origin and dropped "
+                 "since the map started (see the map log)")
     num = (own or {}).get("num")
     # r4 #1: what rules out a DM to this box's own radio, said
     line += (f" · own radio id: !{num:08x} (from {own.get('source') or 'a connection'})"
@@ -541,6 +560,7 @@ def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
     return {"acks_visible": w.since is not None, "since": w.since, "why": w.why,
             "channels": visible, "unreadable": unreadable, "counts": snap["counts"],
             "late_acks": late_acks, "own_id": None if num is None else f"!{num:08x}",
+            "refuted_kept": len(_REFUTED),
             "line": line}
 
 
@@ -747,8 +767,13 @@ def validate_send(data: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         return {"text": text, "channel": channel, "dest_num": None, "to_id": None}, None
     if not isinstance(destination, str) or not _NODE_ID.match(destination):
         return None, "destination must be '^all' or a node id like !a1b2c3d4"
-    return {"text": text, "channel": channel,
-            "dest_num": int(destination[1:], 16), "to_id": destination.lower()}, None
+    num = int(destination[1:], 16)
+    if num == 0xFFFFFFFF:          # any spelling of broadcast is a broadcast
+        return {"text": text, "channel": channel, "dest_num": None, "to_id": None}, None
+    if num == 0:
+        return None, "destination !00000000 is not a node"
+    # stored canonically (r7 #1): one spelling for every reader of to_id
+    return {"text": text, "channel": channel, "dest_num": num, "to_id": f"!{num:08x}"}, None
 
 
 def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
@@ -781,4 +806,9 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     }
     if not rec.success:
         body["record_error"] = rec.message
+    elif (getattr(rec, "data", None) or {}).get("stamped") is False:
+        # r7 #3: said, never a silent fall-back to header-only judging
+        body["stamp_error"] = ("this box's radio id was not recorded with the send "
+                               "(see the map log); its delivery is judged from the "
+                               "DM's header alone")
     return (200 if handed_off else 502), body

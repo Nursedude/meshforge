@@ -89,7 +89,11 @@ class Origin:
     why: str = ""
 
 
-_NODE_ID = re.compile(r"![0-9a-fA-F]{8}")
+#: THE node-id spelling (1-8 hex digits, any case) -- ONE pattern for the
+#: send validator (``inbox_api``) and this seam (Fable r7 #1, hfm #5: the
+#: validator took ``!a1b2c3d`` and the seam refused it, so a real delivery
+#: could never settle). A send stores it canonically as ``!%08x``.
+NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{1,8}$")
 
 
 def _node_strict(v) -> Optional[int]:
@@ -99,7 +103,7 @@ def _node_strict(v) -> Optional[int]:
     if isinstance(v, bool):
         return None
     if isinstance(v, str):
-        v = int(v[1:], 16) if _NODE_ID.fullmatch(v) else None
+        v = int(v[1:], 16) if NODE_ID_RE.fullmatch(v) else None
     if isinstance(v, int) and 0 < v < 0xFFFFFFFF:
         return v
     return None
@@ -221,7 +225,8 @@ def classify(sends: Iterable[Send], replies: Iterable[RoutingReply], *,
                      origin_unknown_acks=origin_unknown, long_after=long_after,
                      origin=og.state, origin_why=og.why)
         if from_dest:
-            out.append(Outcome(s, DELIVERED, latency_s=from_dest[0] - s.t,
+            # a reply inside REPLY_SLOP_S before the stamp is 0 s, never negative (r7 #8)
+            out.append(Outcome(s, DELIVERED, latency_s=max(0.0, from_dest[0] - s.t),
                                other_acks=others, **extra))
         elif naks:
             d, nak = sorted(naks, key=lambda dn: (not dn[0], dn[1].t))[0]
