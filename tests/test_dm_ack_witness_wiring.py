@@ -111,3 +111,23 @@ class TestDispatch:
             s._on_connect(None, None, {}, 0)
             s._on_disconnect(None, None, 7)
         assert fw.posture == ["started", ("stopped", "MQTT disconnected (rc=7)")]
+
+
+def test_r2_9_witness_only_traffic_never_moves_the_old_stats():
+    """Fable r2 #9: messages_received / last_message_time are read as the
+    old subscription's liveness -- other channels' /e/ must not freshen it."""
+    s = _sub(True)
+    fw = FakeWitness()
+    own = local_subscriber_config()["channel"]
+    with patch.object(MQTTNodelessSubscriber, "_ack_witness", staticmethod(lambda: fw)), \
+            patch.object(s, "_handle_encrypted_message", lambda t, p: None), \
+            patch.object(s, "_persist_map_cache", lambda: None), \
+            patch.object(s, "_cleanup_stale_nodes", lambda: None):
+        before = dict(s._stats)
+        s._on_message(None, None, _msg("msh/2/e/PKI/!6201ce25"))
+        assert s._stats.get("messages_received") == before.get("messages_received")
+        assert s._stats.get("last_message_time") == before.get("last_message_time")
+        assert s._stats.get("witness_only_envelopes") == 1
+        s._on_message(None, None, _msg(f"msh/2/e/{own}/!6201ce25"))
+        assert s._stats["messages_received"] == (before.get("messages_received") or 0) + 1
+    assert fw.seen == ["msh/2/e/PKI/!6201ce25", f"msh/2/e/{own}/!6201ce25"]

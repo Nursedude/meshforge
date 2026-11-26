@@ -104,3 +104,13 @@ def test_concurrent_reads_never_interleave():
 
 def test_one_cache_per_process():
     assert get_dm_journal_cache() is get_dm_journal_cache()
+
+
+def test_held_never_reads_and_says_none_without_coverage():
+    r = FakeReader(([_a(NOW - 30)], "c1", None))
+    c = DmJournalCache(reader=r)
+    assert c.held(since=NOW - 60, now=NOW) is None          # never read
+    c.read(None, since=NOW - 60, now=NOW)
+    assert [x.packet_id for x in c.held(since=NOW - 60, now=NOW + 999)] == [0x51]
+    assert c.held(since=NOW - 3600, now=NOW) is None        # before coverage
+    assert len(r.calls) == 1

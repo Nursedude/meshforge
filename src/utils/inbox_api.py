@@ -342,6 +342,9 @@ def read_inbox(limit: int = 500) -> Dict[str, Any]:
 
 #: The witness line names channels seen on the broker this recently (Q19).
 DM_CHANNELS_RECENT_S = 30 * 60
+#: A send this long past its waiting window no longer forks journalctl: the
+#: journal is a hint about the send window, and the cache keeps what it read.
+JOURNAL_FRESH_S = 120
 
 
 def _dm_sends(threads: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
@@ -375,6 +378,7 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     snap = dm_ack_witness.get_witness().snapshot(now=now)
     sends = _dm_sends(threads)
     kept: Dict[int, Dict[str, Any]] = {}
+    kept_why = None
     if sends:
         try:
             kept, refused = store.kept_dm([(m["id"], m["packet_id"]) for _, m in sends])
@@ -383,6 +387,7 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
         except Exception as e:
             logger.warning("inbox: kept DM verdicts unreadable: %s", e)
             errors.append(f"kept DM verdicts unreadable: {type(e).__name__}: {e}")
+            kept_why = "kept verdicts unreadable (a settled answer may be hidden)"
     todo = []
     for t, m in sends:
         k = kept.get(m["id"])
@@ -406,14 +411,21 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
         todo.append((t, m, sent))
     journal: List[Any] = []
     journal_why = None
-    if todo:
+    fresh = [s for _, _, s in todo if now - s <= dd.WAITING_S + JOURNAL_FRESH_S]
+    cache = dm_journal_cache.get_dm_journal_cache()
+    if fresh:
         # ONE in-process cache with a cursor: a poll walks only the lines
-        # since the last poll (r1 F1: every poll re-read up to 6 h).
-        journal, journal_why = dm_journal_cache.get_dm_journal_cache().read(
-            subprocess.run, since=min(s for _, _, s in todo) - 2, now=now)
+        # since the last poll (r1 F1). Only a FRESH send forks journalctl:
+        # the journal is a hint about the send window (Fable r2 #10).
+        journal, journal_why = cache.read(subprocess.run, since=min(fresh) - 2, now=now)
         if journal_why or journal is None:
             errors.append(journal_why)
             journal = []
+    if todo:
+        # older rows: whatever the cache already holds -- never a new read
+        journal = list(journal) + [ln for ln in (cache.held(
+            since=min(s for _, _, s in todo) - 2, now=now) or []) if ln not in journal]
+    unreadable = _unreadable_channels(snap, now)
     keep = []
     for t, m, sent in todo:
         v = dd.row_verdict(dd.Send(sent, m["packet_id"], t.get("partner")),
@@ -423,8 +435,15 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
                 v.state == dd.ROW_FAILED and v.said_by in dd.TERMINAL_SAID_BY)):
             continue          # a kept relay NAK stands until the destination answers
         d = _verdict_dict(v, kept=False)
-        if journal_why and v.state not in dd.ROW_FINAL_STATES:
-            d["detail"] += f" · {journal_why} (our radio's refusals unseen)"
+        if v.state not in dd.ROW_FINAL_STATES:
+            if journal_why:
+                d["detail"] += f" · {journal_why} (journal hints unseen)"
+            if kept_why:
+                d["detail"] += f" · {kept_why}"
+            if unreadable and v.state != dd.ROW_WAITING:
+                # Q6, Fable r2 #4: an ack on a channel this box cannot open
+                d["detail"] += (f" · acks on {', '.join(unreadable)} are unreadable "
+                                f"here (key not held)")
         m["delivery"] = d
         if v.state in dd.ROW_FINAL_STATES:
             keep.append((m["id"], m["packet_id"], d))
@@ -438,22 +457,43 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     return _witness_line(snap, now, late_acks), ("; ".join(errors) or None)
 
 
+#: The PKI topic carries DM BODIES (curve25519), never a channel-keyed ack:
+#: not "unreadable" for ack purposes (measured 11-25: every ack decrypted
+#: with the default key, n=6).
+PKI_TOPIC = "PKI"
+
+
+def _recent(d: Dict[str, float], now: float) -> List[str]:
+    return sorted(c for c, ts in (d or {}).items() if now - ts <= DM_CHANNELS_RECENT_S)
+
+
+def _unreadable_channels(snap: Dict[str, Any], now: float) -> List[str]:
+    """Channels seen on the broker recently that the default key never
+    opened -- an ack there is invisible to this box (Q6, Fable r2 #4)."""
+    opened = set(_recent(snap.get("decrypted") or {}, now))
+    return [c for c in _recent(snap.get("channels") or {}, now)
+            if c not in opened and c != PKI_TOPIC]
+
+
 def _witness_line(snap: Dict[str, Any], now: float, late_acks: int) -> Dict[str, Any]:
-    """Q19: name what the witness covers, measured from the broker."""
+    """Q19: name what the witness covers, MEASURED: a channel counts as
+    visible only once the default key opened something on it (Fable r2 #4 --
+    "seen" was presence, not function)."""
     w = snap["witness"]
-    recent = sorted(c for c, ts in snap["channels"].items()
-                    if now - ts <= DM_CHANNELS_RECENT_S)
+    visible = _recent(snap.get("decrypted") or {}, now)
+    unreadable = _unreadable_channels(snap, now)
+    mins = DM_CHANNELS_RECENT_S // 60
     if w.since is None:
         line = f"DM acks: not visible — {w.why}"
-    elif recent:
-        line = (f"DM acks visible on: {', '.join(recent)} — seen here in the last "
-                f"{DM_CHANNELS_RECENT_S // 60} min")
+    elif visible:
+        line = f"DM acks visible on: {', '.join(visible)} — decrypted here in the last {mins} min"
     else:
-        line = (f"DM acks: witness listening, but no channel seen here in the last "
-                f"{DM_CHANNELS_RECENT_S // 60} min")
+        line = f"DM acks: witness listening, but nothing decrypted here in the last {mins} min"
+    if w.since is not None and unreadable:
+        line += f" · seen but unreadable (key not held): {', '.join(unreadable)}"
     return {"acks_visible": w.since is not None, "since": w.since, "why": w.why,
-            "channels": recent, "counts": snap["counts"], "late_acks": late_acks,
-            "line": line}
+            "channels": visible, "unreadable": unreadable, "counts": snap["counts"],
+            "late_acks": late_acks, "line": line}
 
 
 #: what a send says when the fleet evidence itself could not be read

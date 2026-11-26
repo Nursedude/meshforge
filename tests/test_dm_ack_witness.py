@@ -247,3 +247,40 @@ class TestReviewR1:
                   _env(frm=ME, to=P5, pid=DM_ID, portnum=1, pki=True, channel="PKI",
                        gateway="!5f01371f"), now=T0 + 0.5)
         assert w.snapshot(now=T0 + 1)["tx"][DM_ID] == 1
+
+
+class TestReviewR2:
+    """Fable r2 #4 + #7 at the witness -- red on d01fafa2."""
+
+    def test_r2_7_own_radios_ack_is_marked_via_own(self):
+        w = _live()
+        w.observe(TOPIC, _ack(frm=ME, pid=0x10), now=T0 + 0.02)
+        w.observe(TOPIC, _ack(), now=T0 + 2)
+        own, dest = sorted(w.snapshot(now=T0 + 3)["replies"], key=lambda r: r.t)
+        assert own.via_own is True and dest.via_own is False
+
+    def test_r2_4_a_channel_is_visible_only_once_something_decrypted_on_it(self):
+        import base64
+        w = _live()
+        w.observe("msh/2/e/PKI/!6201ce25", _dm(), now=T0)
+        w.observe(TOPIC, _env(frm=P5, to=ME, pid=0x52, request_id=DM_ID, channel="Private",
+                              key_b64=base64.b64encode(bytes(range(16))).decode()), now=T0 + 1)
+        w.observe(TOPIC, _ack(channel="LongFast"), now=T0 + 2)
+        s = w.snapshot(now=T0 + 3)
+        assert set(s["decrypted"]) == {"LongFast"}
+        assert {"PKI", "Private", "LongFast"} <= set(s["channels"])
+
+
+class TestMutantsWitness:
+
+    def test_mut_a_second_start_never_moves_coverage(self):
+        w = AckWitness()
+        w.started(now=T0)
+        w.started(now=T0 + 50)
+        assert w.snapshot(now=T0 + 60)["witness"].since == T0
+
+    def test_mut_replies_older_than_the_ring_window_are_dropped(self):
+        from utils.dm_ack_witness import RING_WINDOW_S
+        w = _live()
+        w.observe(TOPIC, _ack(), now=T0)
+        assert w.snapshot(now=T0 + RING_WINDOW_S + 1)["replies"] == []

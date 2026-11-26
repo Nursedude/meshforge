@@ -982,12 +982,13 @@ def keep_dm(items: List[tuple], now: Optional[float] = None) -> None:
     if not rows:
         return
     stamp = time.time() if now is None else now
-    t1, t2 = _dm_terminal_said_by()
+    terminal = tuple(_dm_terminal_said_by())
+    marks = ", ".join("?" * len(terminal))
     conn = _init_db()
     try:
-        # Rank: delivered > a failure the destination / our radio said >
-        # a relay's failure. Never a downgrade (r1 F10: a relay NAK was
-        # never upgraded to the destination's own NAK).
+        # Rank: delivered > a failure a TERMINAL sender said (the
+        # destination) > anyone else's failure. Never a downgrade (r1 F10;
+        # pinned by test_inbox_dm_delivery.TestStoreRanking).
         conn.executemany(
             "INSERT INTO dm_kept (message_id, packet_id, state, detail, reason, said_by, "
             "latency_s, sent_n, kept_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -996,9 +997,9 @@ def keep_dm(items: List[tuple], now: Optional[float] = None) -> None:
             "latency_s = excluded.latency_s, sent_n = MAX(excluded.sent_n, dm_kept.sent_n), "
             "kept_at = excluded.kept_at "
             "WHERE (excluded.state = ? AND dm_kept.state != ?) "
-            "OR (excluded.state = ? AND excluded.said_by IN (?, ?) "
-            "AND dm_kept.state = ? AND dm_kept.said_by NOT IN (?, ?))",
-            [(*r, stamp, finals[0], finals[0], finals[1], t1, t2, finals[1], t1, t2)
+            f"OR (excluded.state = ? AND excluded.said_by IN ({marks}) "
+            f"AND dm_kept.state = ? AND dm_kept.said_by NOT IN ({marks}))",
+            [(*r, stamp, finals[0], finals[0], finals[1], *terminal, finals[1], *terminal)
              for r in rows])
         conn.commit()
     finally:

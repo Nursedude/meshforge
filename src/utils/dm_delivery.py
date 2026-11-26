@@ -50,6 +50,9 @@ class RoutingReply:
     sender: int         # the reply packet's `from`
     request_id: int     # the DM packet id it answers
     error: str          # "NONE" for a positive ack, else the NAK reason
+    #: The reply was uplinked by its OWN sender (envelope gateway == from):
+    #: our radio's own ack. A wire fact -- no own-node id is inferred.
+    via_own: bool = False
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,10 @@ class Outcome:
     latency_s: Optional[float] = None   # to the destination's ack, if DELIVERED
     reason: str = ""                    # NAK reason, if FAILED
     other_acks: int = 0                 # positive acks not from the destination
+    nak_sender: Optional[int] = None    # who said the NAK, if FAILED
+    gave_up: str = ""                   # retry give-up seen (give_up_fails=False)
+    early: int = 0                      # same id, stamped just BEFORE the send
+    own_dest_acks: int = 0              # "destination" acks our radio uplinked itself
 
 
 @dataclass
@@ -73,29 +80,53 @@ def _is_positive(error) -> bool:
     return error in (None, "", "NONE")
 
 
-def classify(sends: Iterable[Send], replies: Iterable[RoutingReply]) -> List[Outcome]:
-    """One Outcome per send, by the rule in the module docstring."""
+#: Routing.Error NAMES meaning the radio stopped retrying (TIMEOUT,
+#: MAX_RETRANSMIT). The one list both sources' give-ups are judged by.
+GIVE_UP_NAMES = ("TIMEOUT", "MAX_RETRANSMIT")
+#: A same-id reply this far BEFORE the send is a clock step, not a reused id.
+EARLY_S = 120
+
+
+def classify(sends: Iterable[Send], replies: Iterable[RoutingReply], *,
+             give_up_fails: bool = True) -> List[Outcome]:
+    """One Outcome per send -- THE source-authority rule (one classifier).
+
+    ``give_up_fails``: the 10-03 drill reads the radio's own API session,
+    where its give-up IS its answer (default True). An /inbox row reads
+    the uplinked ``/e/``, where a give-up proves only that a radio heard no
+    ack -- rows pass False and get ``gave_up`` instead (§4b, r1 F2, r2 #3).
+    A positive ack uplinked by its own sender (``via_own``) is never the
+    destination's (r2 #7). The destination's NAK is preferred (r2 #5)."""
     replies = list(replies)
     out = []
     for s in sends:
         dest = _node_num(s.dest)
         mine = [r for r in replies if r.request_id == s.packet_id and r.t >= s.t - 1]
-        from_dest = sorted(r.t for r in mine
-                           if _is_positive(r.error) and dest is not None
-                           and _node_num(r.sender) == dest)
-        naks = [r for r in mine if not _is_positive(r.error)]
-        others = sum(1 for r in mine
-                     if _is_positive(r.error) and _node_num(r.sender) != dest)
+        early = sum(1 for r in replies if r.request_id == s.packet_id
+                    and s.t - EARLY_S <= r.t < s.t - 1)
+        is_dest = [dest is not None and _node_num(r.sender) == dest and not r.via_own
+                   for r in mine]
+        from_dest = sorted(r.t for r, d in zip(mine, is_dest) if d and _is_positive(r.error))
+        own_dest = sum(1 for r in mine if _is_positive(r.error) and r.via_own
+                       and dest is not None and _node_num(r.sender) == dest)
+        give_ups = [r for r in mine if not _is_positive(r.error)
+                    and str(r.error) in GIVE_UP_NAMES]
+        naks = [(d, r) for r, d in zip(mine, is_dest) if not _is_positive(r.error)
+                and (give_up_fails or str(r.error) not in GIVE_UP_NAMES)]
+        others = sum(1 for r, d in zip(mine, is_dest) if _is_positive(r.error) and not d)
+        gave = "" if give_up_fails or not give_ups else str(give_ups[0].error)
+        extra = dict(gave_up=gave, early=early, own_dest_acks=own_dest)
         if from_dest:
             out.append(Outcome(s, DELIVERED, latency_s=from_dest[0] - s.t,
-                               other_acks=others))
+                               other_acks=others, **extra))
         elif naks:
-            out.append(Outcome(s, FAILED, reason=str(naks[0].error),
-                               other_acks=others))
+            d, nak = sorted(naks, key=lambda dn: (not dn[0], dn[1].t))[0]
+            out.append(Outcome(s, FAILED, reason=str(nak.error), other_acks=others,
+                               nak_sender=_node_num(nak.sender), **extra))
         elif others:
-            out.append(Outcome(s, LEFT_ONLY, other_acks=others))
+            out.append(Outcome(s, LEFT_ONLY, other_acks=others, **extra))
         else:
-            out.append(Outcome(s, NO_WITNESS))
+            out.append(Outcome(s, NO_WITNESS, **extra))
     return out
 
 
@@ -137,6 +168,9 @@ WAITING_S = 60
 #: Routing.Error codes that mean OUR radio stopped retrying -- never a
 #: delivery failure (r1 F2): TIMEOUT, MAX_RETRANSMIT.
 RETRY_GIVE_UP = (3, 5)
+#: A journal line may precede the stored send stamp by this much (the row is
+#: stamped after the HTTP send returns; whole-second SQLite time).
+JOURNAL_SLOP_S = 2
 #: hfm #6: a send stamped further ahead of now than this is a clock step,
 #: never "waiting" (which would then last until the clock caught up).
 CLOCK_SLOP_S = 60
@@ -182,6 +216,7 @@ class RowVerdict:
     late: bool = False        # delivered after WAITING_S
     sent_n: int = 0           # copies of the DM seen on /e/ (retransmissions)
     possible_ack: bool = False
+    hints: tuple = ()         # evidence that never settles a row (see seam)
 
 
 def _sent(n: int) -> str:
@@ -191,24 +226,23 @@ def _sent(n: int) -> str:
 def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
                 journal: Iterable[JournalLine] = (), tx_seen: int = 0,
                 now: Optional[float] = None) -> RowVerdict:
-    """The five-state verdict for one DM row (design §1 + §4b).
+    """The five-state verdict for one DM row (design §1 + §4b), on THE
+    source-authority rule (``classify(give_up_fails=False)``, pinned by
+    ``tests/test_dm_authority.py``).
 
-    Order: a final answer (delivered / failed) wins whenever it exists, even
-    late; else inside the window = waiting; else left / no-ack with its why.
-    Never "delivered" from anyone but the destination; never "failed" from a
-    retry give-up (invisible on this fleet, §4b).
+    Only ``/e/`` settles a row: the destination's ack (delivered) or a NAK
+    (failed -- final only when the destination said it). The journal is a
+    HINT, never final (operator 11-25: any node's text can shape it).
+    Coverage only picks the why; the ring decides whenever it holds an
+    answer (r1 F3).
     """
     now = time.time() if now is None else now
     journal = list(journal)
     dest = _node_num(send.dest)
     sent_n = max(0, int(tx_seen))
+    (o,) = classify([send], replies, give_up_fails=False)
 
-    # The ring decides whenever it holds an answer -- whatever the witness's
-    # coverage now (r1 F3: a broker reconnect moved ``since`` past the send
-    # and threw away the destination's ack already in the ring).
-    (o,) = classify([send], replies)
     if o.status == DELIVERED:
-        # The destination's own ack outranks ANY journal error (r1 F2).
         late = o.latency_s is not None and o.latency_s > WAITING_S
         return RowVerdict(
             ROW_DELIVERED,
@@ -216,25 +250,39 @@ def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
             + (" (after the waiting window)" if late else ""),
             latency_s=o.latency_s, late=late, sent_n=sent_n)
 
-    # Our radio's own refusal: journal-only, exact packet id (Q1'). A retry
-    # GIVE-UP is not a refusal: it proves only that OUR radio heard no ack
-    # (§4b: "failed" never comes from a give-up) -- r1 F2.
-    mine = [j for j in journal if j.kind == "alloc_err" and j.packet_id == send.packet_id
-            and j.err]
-    for j in mine:
-        if j.err not in RETRY_GIVE_UP:
+    # Hints: evidence that never settles the row, shown beside its state.
+    hints = []
+    in_window = [j for j in journal
+                 if send.t - JOURNAL_SLOP_S <= j.t <= send.t + WAITING_S]
+    for j in in_window:
+        if j.kind == "alloc_err" and j.packet_id == send.packet_id and j.err:
             name = routing_error_name(j.err)
-            return RowVerdict(ROW_FAILED, f"failed: {name} (said by our radio)",
-                              reason=name, said_by="our radio", sent_n=sent_n)
-    gave_up = next((routing_error_name(j.err) for j in mine), None)
+            if j.err in RETRY_GIVE_UP:
+                hints.append(f"our radio gave up after retries ({name}, journal)")
+            else:
+                hints.append(f"our radio reported {name} (journal hint, not final)")
+            break
+    if o.gave_up:
+        hints.append(f"a radio gave up after retries ({o.gave_up})")
+    if o.own_dest_acks:
+        hints.append("DM to this box's own radio — its own ack is not delivery")
+    if o.early:
+        hints.append("an ack for this id is stamped before the send (clock step?)")
+    possible = dest is not None and any(
+        j.kind == "routing_from" and j.sender is not None
+        and _node_num(j.sender) == dest for j in in_window if j.t >= send.t)
+    if possible:
+        hints.append("possible ack, not matched — routing from the destination is "
+                     "in this box's journal but not on its broker (this box may not "
+                     "uplink the channel the ack came on)")
+    tail = "".join(f" · {h}" for h in hints) + _sent(sent_n)
 
     if o.status == FAILED:
-        nak = next(r for r in replies if r.request_id == send.packet_id
-                   and not _is_positive(r.error) and r.t >= send.t - 1)
-        who = ("the destination" if _node_num(nak.sender) == dest
-               else f"!{_node_num(nak.sender) or 0:08x}")
-        return RowVerdict(ROW_FAILED, f"failed: {o.reason} (said by {who})",
-                          reason=o.reason, said_by=who, sent_n=sent_n)
+        who = ("the destination" if o.nak_sender == dest
+               else f"!{o.nak_sender or 0:08x}")
+        return RowVerdict(ROW_FAILED, f"failed: {o.reason} (said by {who})" + tail,
+                          reason=o.reason, said_by=who, sent_n=sent_n,
+                          hints=tuple(hints))
 
     if witness.since is None:
         why = witness.why or "this box cannot see delivery acks"
@@ -244,31 +292,22 @@ def row_verdict(send: Send, replies: Iterable[RoutingReply], witness: Witness,
         why = "this box's clock went backward since the send (it is stamped in the future)"
     elif now - send.t < WAITING_S:
         return RowVerdict(ROW_WAITING,
-                          f"waiting — {max(0, int(now - send.t))} s of {WAITING_S} s"
-                          + _sent(sent_n), sent_n=sent_n)
+                          f"waiting — {max(0, int(now - send.t))} s of {WAITING_S} s" + tail,
+                          sent_n=sent_n, hints=tuple(hints), possible_ack=possible)
     elif o.status == LEFT_ONLY:
         return RowVerdict(ROW_LEFT_UNCONFIRMED,
                           "left, not confirmed — acked only by our radio or a "
-                          "relay, never the destination" + _sent(sent_n),
-                          sent_n=sent_n)
+                          "relay, never the destination" + tail,
+                          sent_n=sent_n, hints=tuple(hints), possible_ack=possible)
     else:
         why = "window closed"
-    if gave_up:
-        why = f"our radio gave up after retries ({gave_up}); " + why
+    return RowVerdict(ROW_NO_ACK, f"no ack seen: {why}" + tail, why=why,
+                      sent_n=sent_n, possible_ack=possible, hints=tuple(hints))
 
-    possible = dest is not None and any(
-        j.kind == "routing_from" and j.sender is not None
-        and _node_num(j.sender) == dest and send.t <= j.t <= send.t + WAITING_S
-        for j in journal)
-    if possible:
-        why = ("possible ack, not matched — routing from the destination is in "
-               "this box's journal but not on its broker (this box may not "
-               "uplink the channel the ack came on); " + why)
-    return RowVerdict(ROW_NO_ACK, f"no ack seen: {why}" + _sent(sent_n),
-                      why=why, sent_n=sent_n, possible_ack=possible)
 
 #: The states a row can settle in -- the only ones the store keeps.
 ROW_FINAL_STATES = (ROW_DELIVERED, ROW_FAILED)
-#: A ``failed`` from these is the end; a relay's NAK can still be overtaken
-#: by the destination's own ack (the destination outranks a relay).
-TERMINAL_SAID_BY = ("the destination", "our radio")
+#: A ``failed`` only the destination's own NAK makes final; anyone else's
+#: can be overtaken by the destination (Fable r2: the journal -- "our
+#: radio" -- is a hint now, never a verdict, operator 11-25).
+TERMINAL_SAID_BY = ("the destination",)

@@ -523,6 +523,17 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
                 )
                 return
 
+            if "/json/" not in topic and self._config.get("ack_witness"):
+                self._ack_witness().observe(topic, payload)
+                if not self._is_own_enc_channel(topic):
+                    # witness-only: the old handler's scope AND its stats stay
+                    # what they were (Fable r2 #9: other channels' /e/ kept
+                    # last_message_time fresh for the old subscription)
+                    with self._stats_lock:
+                        self._stats["witness_only_envelopes"] = \
+                            self._stats.get("witness_only_envelopes", 0) + 1
+                    return
+
             with self._stats_lock:
                 self._stats["messages_received"] += 1
                 self._stats["last_message_time"] = datetime.now()
@@ -531,10 +542,6 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
             if "/json/" in topic:
                 self._handle_json_message(topic, payload)
             else:
-                if self._config.get("ack_witness"):
-                    self._ack_witness().observe(topic, payload)
-                    if not self._is_own_enc_channel(topic):
-                        return  # witness-only: the old handler's scope is unchanged
                 # Encrypted payload - just track node existence
                 self._handle_encrypted_message(topic, payload)
 

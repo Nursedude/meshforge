@@ -39,15 +39,17 @@ def _ack(dt, sender, pid, err="NONE"):
 class TestMeasuredRows:
     """The §4 table, row by row -- each read handed_off that day."""
 
-    def test_nak_a_local_refusal_is_failed_said_by_our_radio(self):
+    def test_nak_a_local_refusal_is_a_named_hint_never_failed(self):
         """Never-seen node: our radio refused (journal-only, exact idFrom);
-        the DM never reached /e/."""
+        the DM never reached /e/. Operator 11-25 (after Fable r2 #1): the
+        journal is a HINT, never final -- the refusal is NAMED on the row."""
         s = _row(0xAB3C8ABF, dest=0x5EED1E56)
         j = [JournalLine(T0 + 0.1, "alloc_err", packet_id=0xAB3C8ABF, err=39)]
         v = row_verdict(s, [], LIVE, journal=j, now=T0 + 5)
-        assert v.state == ROW_FAILED
-        assert v.reason == "PKI_SEND_FAIL_PUBLIC_KEY"
-        assert v.said_by == "our radio"
+        assert v.state == ROW_WAITING
+        assert "PKI_SEND_FAIL_PUBLIC_KEY" in v.detail and "journal" in v.detail
+        v = row_verdict(s, [], LIVE, journal=j, now=T0 + WAITING_S + 1)
+        assert v.state == ROW_NO_ACK and "PKI_SEND_FAIL_PUBLIC_KEY" in v.detail
 
     def test_relay_1_destination_nak_is_failed_said_by_destination(self):
         s = _row(0xAB3C8AC1, dest=FAR)
@@ -99,7 +101,7 @@ class TestMeasuredRows:
                         now=T0 + WAITING_S + 1)
         assert v.state == ROW_NO_ACK
         assert v.possible_ack is True
-        assert "possible ack, not matched" in v.why
+        assert "possible ack, not matched" in v.detail
 
     def test_replug_after_boot_is_delivered(self):
         s = _row(0xAB3C8AC6)
@@ -170,13 +172,13 @@ class TestBlindWitness:
         assert v.state == ROW_NO_ACK
         assert "witness started after this send" in v.why
 
-    def test_journal_refusal_still_decides_when_mqtt_witness_is_blind(self):
-        """The journal is its own witness for our radio's refusals."""
+    def test_journal_refusal_is_still_named_when_mqtt_witness_is_blind(self):
+        """The journal hint survives a blind /e/ witness (hint, not verdict)."""
         s = _row(0xAB3C8ABF, dest=0x5EED1E56)
         blind = Witness(since=None, why="map MQTT listener not running")
         j = [JournalLine(T0 + 0.1, "alloc_err", packet_id=0xAB3C8ABF, err=39)]
         v = row_verdict(s, [], blind, journal=j, now=T0 + 5)
-        assert v.state == ROW_FAILED
+        assert v.state == ROW_NO_ACK and "PKI_SEND_FAIL_PUBLIC_KEY" in v.detail
 
     def test_wrong_subscription_control_never_delivered(self):
         """§4 #5: the witness on the wrong topic sees nothing -> no ack
@@ -248,7 +250,7 @@ class TestReviewR1:
         j = [JournalLine(T0 + 17, "alloc_err", packet_id=0xAB3C8AC4, err=code)]
         v = row_verdict(s, [], LIVE, journal=j, tx_seen=3, now=T0 + WAITING_S + 1)
         assert v.state == ROW_NO_ACK
-        assert "our radio gave up" in v.why
+        assert "our radio gave up" in v.detail
 
     def test_f3_ack_in_the_ring_counts_after_a_reconnect(self):
         """A broker blip moves witness.since past the send; the ring still

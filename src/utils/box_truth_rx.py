@@ -387,11 +387,34 @@ class JournalLine(NamedTuple):
     err: Optional[int] = None
 
 
+#: A received text's own journal entry (the firmware prefix, then the text).
+_TEXT_RE = re.compile(_DM_PREFIX + r"\[Router\] Received text msg ")
+#: Any entry of the unit at all (journald's own ``unit[pid]:`` prefix).
+_UNIT_RE = re.compile(r"\A(\d+(?:\.\d+)?) \S+ meshtasticd[\w-]*\[\d+\]: ")
+#: journald gives every newline-split piece of ONE logged message its own
+#: entry, same pid, stamped within ~5 ms (Fable r2 #1, MEASURED: 41 such
+#: entries after text lines in 24 h). A fact this close after a received
+#: text -- or after that text's continuation pieces -- is the text, never
+#: the firmware: dropped. The journal is a hint only (operator 11-25).
+TEXT_SPLIT_S = 0.02
+
+
 def parse_dm_journal(text: str) -> List[JournalLine]:
     """``journalctl -u meshtasticd -o short-unix`` text -> the DM facts, in
-    order. Every other line -- and every other field -- is dropped."""
+    order. Every other line -- and every other field -- is dropped, and so
+    is any fact that is a newline-split piece of a received text."""
     out: List[JournalLine] = []
+    text_t: Optional[float] = None
     for line in text.splitlines():
+        if _TEXT_RE.match(line):
+            text_t = float(_TEXT_RE.match(line).group(1))
+            continue
+        u = _UNIT_RE.match(line)
+        if u is not None and text_t is not None:
+            if float(u.group(1)) - text_t <= TEXT_SPLIT_S:
+                text_t = float(u.group(1))   # a piece of the same text: chain on
+                continue
+            text_t = None
         m = _ALLOC_RE.match(line)
         if m:
             ts, err, pid = _num(float(m.group(1))), int(m.group(2)), int(m.group(3), 16)
@@ -451,4 +474,10 @@ def read_dm_journal(runner: Callable[..., Any], *, since: float, now: float,
         # a resume ALWAYS prints the cursor (measured, rx_heard above)
         return None, None, (f"journal unreadable: journalctl returned nothing for "
                             f"{unit} after the cursor (unit renamed, or access lost)")
+    if not cursor and new_cursor is None:
+        # rc 0 + "-- No entries --" + no cursor: an absent unit and an empty
+        # window look the same (measured, Fable r2 #10). The window holds
+        # our own send; meshtasticd is never silent that long -> unobservable.
+        return None, None, (f"journal unreadable: no {unit} journal lines in the "
+                            f"window (unit absent or renamed?)")
     return parse_dm_journal(out), new_cursor or cursor, None

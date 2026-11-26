@@ -52,6 +52,9 @@ class AckWitness:
         self._replies: deque = deque(maxlen=RING_CAP)
         self._tx: "OrderedDict[int, int]" = OrderedDict()
         self._channels: Dict[str, float] = {}
+        #: channels on which the DEFAULT key opened something (r2 #4: "seen"
+        #: is presence, not function -- only these can carry a visible ack)
+        self._decrypted: Dict[str, float] = {}
         self._counts = {k: 0 for k in COUNTERS}
 
     # -- lifecycle (called by the subscriber) --------------------------------
@@ -118,7 +121,10 @@ class AckWitness:
         if dp is None:
             self._bump("decrypt_failed")
             return
-        self._bump("decrypted")
+        with self._lock:
+            self._counts["decrypted"] += 1
+            if channel:
+                self._decrypted[channel] = t
         if not dp.is_routing or not dp.request_id:
             return
         err = dp.routing_error_name()
@@ -129,8 +135,10 @@ class AckWitness:
             return
         with self._lock:
             self._counts["routing"] += 1
-            self._replies.append(RoutingReply(t, int(dp.from_node),
-                                              int(dp.request_id), err))
+            # via_own: the envelope's gateway IS the reply's sender -- our
+            # radio uplinking its own ack (wire fact, r2 #7)
+            self._replies.append(RoutingReply(t, int(dp.from_node), int(dp.request_id),
+                                              err, via_own=gateway == f"!{int(dp.from_node):08x}"))
 
     def _bump(self, k: str) -> None:
         with self._lock:
@@ -148,6 +156,7 @@ class AckWitness:
                     "replies": replies,
                     "tx": dict(self._tx),
                     "channels": dict(self._channels),
+                    "decrypted": dict(self._decrypted),
                     "counts": dict(self._counts)}
 
 

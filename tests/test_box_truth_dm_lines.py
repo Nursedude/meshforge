@@ -63,7 +63,8 @@ class TestAllowlist:
             PFX + "INFO  | 02:43:29 310406 [Router] Received text msg from=0x1, id=0x2, msg=hello",
             PFX + "INFO  | 02:43:29 310406 [Router] Received position from=0x1, id=0x3, portnum=3, payloadlen=9",
             "-- cursor: s=abc",
-            _alloc(), _routing()])
+            # a second later: a firmware line, not a piece of the text above
+            _alloc(ts="1795000011.250"), _routing(ts="1795000011.300")])
         out = parse_dm_journal(text)
         assert [j.kind for j in out] == ["alloc_err", "routing_from"]
         for j in out:
@@ -158,3 +159,41 @@ class TestRead:
         run, calls = self._runner(_Proc(out=CUR))
         read_dm_journal(run, since=0, now=self.NOW)
         assert f"--since=@{int(self.NOW - DM_READ_MAX_S)}" in calls[0][0]
+
+
+class TestReviewR2Lines:
+
+    def test_mut_trailing_junk_after_the_alloc_line_is_not_a_fact(self):
+        assert parse_dm_journal(_alloc() + ",extra") == []
+
+    def test_r2_10_full_read_with_no_line_at_all_is_unobservable(self):
+        """`journalctl -u <no-such-unit>` and a window with no line both give
+        rc 0 + `-- No entries --` + no cursor (measured r2). A window holding
+        our own send cannot be silent for meshtasticd (~13 lines/min) -- it is
+        unobservable, never 'read, nothing'."""
+        from utils.box_truth_rx import read_dm_journal
+        run = lambda argv, **kw: _Proc(out=b"-- No entries --\n")  # noqa: E731
+        lines, _c, why = read_dm_journal(run, since=TestRead.NOW - 60, now=TestRead.NOW)
+        assert lines is None and "no meshtasticd journal lines" in why
+
+    def test_r2_1_a_text_split_into_a_new_entry_is_never_a_fact(self):
+        """Fable r2 #1 (CONFIRMED): journald gives each newline-split piece of
+        a logged text its own prefixed entry. A fact that FOLLOWS a
+        `Received text msg` entry within the same millisecond is dropped."""
+        text = "\n".join([
+            "1795000010.250 box meshtasticd-patched[773661]: INFO  | 02:43:29 310406 "
+            "[Router] Received text msg from=0x11223344, id=0x55, msg=hi",
+            "1795000010.250 box meshtasticd-patched[773661]: INFO  | 02:43:30 310407 "
+            "Alloc an err=6,to=0x1,idFrom=0xab3c8abf,id=0x1",
+            "1795000010.251 box meshtasticd-patched[773661]: INFO  | 02:43:30 310407 "
+            "[Router] Received routing from=0xb03da894, id=0x9, portnum=5, payloadlen=2",
+        ])
+        assert parse_dm_journal(text) == []
+
+    def test_a_fact_well_after_a_text_still_parses(self):
+        text = "\n".join([
+            "1795000010.250 box meshtasticd-patched[773661]: INFO  | 02:43:29 310406 "
+            "[Router] Received text msg from=0x11223344, id=0x55, msg=hi",
+            _alloc(ts="1795000011.900"),
+        ])
+        assert [j.kind for j in parse_dm_journal(text)] == ["alloc_err"]

@@ -84,14 +84,15 @@ class TestRowStates:
         d = msgs[mid]["delivery"]
         assert d["state"] == ROW_DELIVERED and d["kept"] is True
 
-    def test_own_radio_refusal_reads_failed_said_by_our_radio(self, tmp_db):
+    def test_own_radio_refusal_is_named_never_kept(self, tmp_db):
+        """Operator 11-25 (Fable r2 #1): the journal is a hint, never final."""
         mid = _dm(dest="!5eed1e56")
         t = _sent(mid)
         j = [JournalLine(t + 0.1, "alloc_err", packet_id=PID, err=39)]
         _, msgs, _ = _read(t + 5, StubWitness(since=t - 60), journal=(j, None))
         d = msgs[mid]["delivery"]
-        assert d["state"] == ROW_FAILED and d["said_by"] == "our radio"
-        assert "PKI_SEND_FAIL_PUBLIC_KEY" in d["detail"]
+        assert d["state"] == ROW_WAITING and "PKI_SEND_FAIL_PUBLIC_KEY" in d["detail"]
+        assert messaging_mod.kept_dm([(mid, PID)])[0] == {}
 
     def test_inside_the_window_reads_waiting_and_is_not_kept(self, tmp_db):
         mid = _dm()
@@ -173,7 +174,9 @@ class TestWitnessLine:
 
     def test_names_the_channels_seen_from_the_broker(self, tmp_db):
         _dm()
-        out, _, _ = _read(10000, StubWitness(since=1.0, channels={"LongFast": 9990.0, "Regional": 10.0}))
+        sw = StubWitness(since=1.0, channels={"LongFast": 9990.0, "Regional": 10.0})
+        sw.snap["decrypted"] = {"LongFast": 9990.0, "Regional": 10.0}
+        out, _, _ = _read(10000, sw)
         w = out["dm_witness"]
         assert w["acks_visible"] is True
         assert w["channels"] == ["LongFast"]          # seen in the recent window only
@@ -277,6 +280,9 @@ class TestReviewR1Inbox:
             def read(self, runner, *, since, now):
                 calls.append(since)
                 return [], None
+
+            def held(self, *, since, now):
+                return []
         with patch("utils.dm_journal_cache.get_dm_journal_cache", return_value=Cache()), \
                 patch.object(inbox_api.time, "time", return_value=t + 5), \
                 patch("utils.message_listener.get_listener_status", return_value={}), \
@@ -316,3 +322,128 @@ class TestReviewR1Inbox:
         messaging_mod.keep_dm([(mid, PID, {"state": ROW_DELIVERED, "detail": "d",
                                            "latency_s": 1.0, "sent_n": 2})])
         assert messaging_mod.kept_dm([(mid, PID)])[0][mid]["sent_n"] == 2
+
+
+class TestReviewR2:
+    """Fable r2 findings 4, 8, 10 + the mutation survivors that matter --
+    red on d01fafa2 unless noted."""
+
+    def test_r2_4_line_names_only_channels_that_decrypted(self, tmp_db):
+        _dm()
+        w = StubWitness(since=1.0, channels={"LongFast": 9990.0, "PKI": 9990.0,
+                                             "Private": 9990.0})
+        w.snap["decrypted"] = {"LongFast": 9990.0}
+        out, _, _ = _read(10000, w)
+        line = out["dm_witness"]["line"]
+        assert out["dm_witness"]["channels"] == ["LongFast"]
+        assert "Private" in line and "unreadable" in line
+        assert out["dm_witness"]["unreadable"] == ["Private"]   # PKI = DM bodies, not acks
+
+    def test_r2_4_row_why_names_an_unreadable_channel(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        w = StubWitness(since=t - 60, channels={"Private": t})
+        w.snap["decrypted"] = {}
+        _, msgs, _ = _read(t + WAITING_S + 5, w)
+        assert "Private" in msgs[mid]["delivery"]["detail"]
+
+    def test_r2_8_unreadable_kept_store_is_said_on_the_row(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        with patch.object(messaging_mod, "kept_dm", side_effect=OSError("disk")):
+            _, msgs, _ = _read(t + 999, StubWitness(since=None, why="restarted"))
+        assert "kept verdicts unreadable" in msgs[mid]["delivery"]["detail"]
+
+    def test_r2_10_old_unsettled_rows_never_fork_the_journal(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        _, _, jr = _read(t + WAITING_S + 600, StubWitness(since=t - 60))
+        assert not jr.called
+
+    def test_r2_10_fresh_row_reads_the_journal(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        _, _, jr = _read(t + 5, StubWitness(since=t - 60))
+        assert jr.called
+
+    def test_mut_journal_since_covers_the_oldest_fresh_send(self, tmp_db):
+        a = _dm(packet_id=PID)
+        ta = _sent(a)
+        _dm(packet_id=PID + 7)
+        _, _, jr = _read(ta + 5, StubWitness(since=ta - 60))
+        assert jr.call_args.kwargs["since"] <= ta
+
+    def test_mut_journal_failure_reaches_delivery_error(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        out, _, _ = _read(t + 5, StubWitness(since=t - 60), journal=(None, "journal unreadable: x"))
+        assert "journal unreadable: x" in out["delivery_error"]
+
+    def test_mut_rns_dm_threads_carry_no_delivery(self, tmp_db):
+        r = messaging_mod.store_outgoing("Wx", "rns", "a" * 32, channel=0,
+                                         delivered=True, packet_id=PID + 3)
+        mid = r.data["message_id"]
+        _, msgs, _ = _read(0, StubWitness())
+        assert "delivery" not in msgs[mid]
+
+    def test_mut_kept_late_flag_survives_a_restart(self, tmp_db):
+        mid = _dm()
+        t = _sent(mid)
+        _read(t + WAITING_S + 30, StubWitness(since=t - 60,
+              replies=[RoutingReply(t + WAITING_S + 20, P5, PID, "NONE")]))
+        out, msgs, _ = _read(t + 9999, StubWitness(since=None, why="restarted"))
+        assert msgs[mid]["delivery"]["late"] is True and out["dm_witness"]["late_acks"] == 1
+
+
+class TestStoreRanking:
+    """keep_dm's SQL rank, pinned directly (Fable r2: an unconditional
+    overwrite mutant survived every test)."""
+
+    def _keep(self, mid, state, said_by="", n=0, latency=None):
+        messaging_mod.keep_dm([(mid, PID, {"state": state, "detail": f"{state} {said_by}",
+                                           "said_by": said_by, "reason": "R" if state == ROW_FAILED else "",
+                                           "latency_s": latency, "sent_n": n})])
+
+    def _kept(self, mid):
+        return messaging_mod.kept_dm([(mid, PID)])[0][mid]
+
+    def test_delivered_is_never_downgraded(self, tmp_db):
+        mid = _dm()
+        self._keep(mid, ROW_DELIVERED, latency=1.0)
+        self._keep(mid, ROW_FAILED, "the destination")
+        self._keep(mid, ROW_FAILED, "!000000d8")
+        assert self._kept(mid)["state"] == ROW_DELIVERED
+
+    def test_destination_failure_outranks_and_is_never_replaced_by_a_relays(self, tmp_db):
+        mid = _dm()
+        self._keep(mid, ROW_FAILED, "!000000d8")
+        self._keep(mid, ROW_FAILED, "the destination")
+        self._keep(mid, ROW_FAILED, "!000000d9")
+        assert self._kept(mid)["said_by"] == "the destination"
+
+    def test_relay_failure_is_replaced_by_delivered(self, tmp_db):
+        mid = _dm()
+        self._keep(mid, ROW_FAILED, "!000000d8")
+        self._keep(mid, ROW_DELIVERED, latency=2.0)
+        assert self._kept(mid)["state"] == ROW_DELIVERED
+
+    def test_sent_n_never_shrinks_on_an_upgrade(self, tmp_db):
+        mid = _dm()
+        self._keep(mid, ROW_FAILED, "!000000d8", n=3)
+        self._keep(mid, ROW_DELIVERED, n=1, latency=2.0)
+        assert self._kept(mid)["sent_n"] == 3
+
+    def test_non_finite_latency_is_refused(self, tmp_db):
+        mid = _dm()
+        with pytest.raises(ValueError):
+            self._keep(mid, ROW_DELIVERED, latency=float("inf"))
+
+
+def test_page_renders_delivery_detail_unconditionally_when_present():
+    """No JS runtime here: pin the render condition itself (an `if (false)`
+    mutant survived the vocabulary tests)."""
+    import pathlib
+    page = (pathlib.Path(__file__).parent.parent / "web" / "inbox.html").read_text()
+    assert "if (m.delivery && m.delivery.detail) {" in page
+    i = page.index("if (m.delivery && m.delivery.detail) {")
+    assert 'el("span", "dl-" + dk, m.delivery.detail)' in page[i:i + 400]

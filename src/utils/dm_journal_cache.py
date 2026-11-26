@@ -55,6 +55,16 @@ class DmJournalCache:
             self._covered_since = max(self._covered_since, floor)
             return [ln for ln in self._lines if ln.t >= lo], None
 
+    def held(self, *, since: float, now: float) -> Optional[List[JournalLine]]:
+        """What the cache already holds from ``since`` -- never a read (Fable
+        r2 #10: old unsettled rows forked journalctl on every poll). None =
+        it holds nothing that covers ``since`` (never read, failed, or the
+        window predates its coverage)."""
+        with self._lock:
+            if self._covered_since is None or since < self._covered_since:
+                return None
+            return [ln for ln in self._lines if ln.t >= since]
+
 
 _CACHE: Optional[DmJournalCache] = None
 _CACHE_LOCK = threading.Lock()
