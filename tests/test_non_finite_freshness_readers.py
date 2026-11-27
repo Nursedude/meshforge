@@ -237,3 +237,42 @@ def test_brief_still_renders_off_a_non_finite_tick(ts):
     from mini_dudeai.brief import build_brief
     out = build_brief({"last_tick_ts": ts, "rules": {}, "host": "t"}, [], NOW)
     assert isinstance(out, str) and out, out
+
+
+# P3 r2 (11-27 Fable BY RUNNING, important #1): the r1 fold fixed
+# snap.mini_ok — a field NO renderer reads. The oracle's ANSWER kept saying
+# "mini:0act" / "all quiet" for a NaN / absent / corrupt tick, and a `true`
+# tick REGRESSED from "mini:stale…" to "all quiet". END state: the answer.
+@pytest.mark.parametrize("raw", ['NaN', 'Infinity', '-Infinity', '1' + '0' * 400,
+                                 'true', '"x"', None, "CORRUPT"],
+                         ids=["nan", "inf", "-inf", "10**400", "true", "str",
+                              "absent", "corrupt"])
+def test_the_oracle_answer_never_reads_quiet_off_an_unreadable_tick(tmp_path, raw):
+    from oracle.intents import answer
+    from oracle.snapshot import read_snapshot
+    p = tmp_path / "mini_dudeai_state.json"
+    if raw == "CORRUPT":
+        p.write_text("{not json", encoding="utf-8")
+    elif raw is None:
+        p.write_text('{"rules": {}}', encoding="utf-8")
+    else:
+        p.write_text('{"rules": {}, "last_tick_ts": %s}' % raw, encoding="utf-8")
+    snap = read_snapshot(home=tmp_path, watchdog_path=tmp_path / "no-wd.json",
+                         status={}, nodes={}, now=NOW)
+    status = answer("status", snap)
+    assert "mini:0act" not in status, status
+    whatsup = answer("whatsup", snap)
+    assert "all quiet" not in whatsup, whatsup
+
+
+def test_the_oracle_answer_still_reads_a_fresh_tick_as_quiet(tmp_path):
+    from oracle.intents import answer
+    from oracle.snapshot import read_snapshot
+    (tmp_path / "mini_dudeai_state.json").write_text(
+        '{"rules": {}, "last_tick_ts": %r}' % (NOW - 10), encoding="utf-8")
+    (tmp_path / "wd.json").write_text(
+        '{"ts": %r, "ok": true, "signals": []}' % (NOW - 10), encoding="utf-8")
+    snap = read_snapshot(home=tmp_path, watchdog_path=tmp_path / "wd.json",
+                         status={}, nodes={}, now=NOW)
+    assert "mini:0act" in answer("status", snap)
+    assert "all quiet" in answer("whatsup", snap)

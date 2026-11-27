@@ -237,6 +237,11 @@ def _mini_short(snap: NocSnapshot) -> str:
         return "mini:?"
     if snap.mini_stale:
         return f"mini:stale{_age(snap.mini_age_s)}"
+    if snap.mini_ok is False:
+        # P3 r2 (11-27): the snapshot judged the tick unreadable (non-finite,
+        # absent, corrupt file) but this renderer never read mini_ok, so the
+        # answer said "mini:0act" — healthy-shaped from a reading nobody took.
+        return "mini:?tick"
     if snap.mini_error_count:
         return f"mini:err{snap.mini_error_count}"
     return f"mini:{len(snap.mini_active)}act"
@@ -250,6 +255,8 @@ def _blind_notes(snap: NocSnapshot) -> List[str]:
         notes.append(f"wd stale{_age(snap.wd_age_s)}")
     if snap.mini_installed and snap.mini_stale:
         notes.append(f"mini stale{_age(snap.mini_age_s)}")
+    elif snap.mini_installed and snap.mini_ok is False:
+        notes.append("mini tick unreadable")   # never "all quiet" (P3 r2)
     return notes
 
 
