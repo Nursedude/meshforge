@@ -252,3 +252,98 @@ def test_skewed_peer_clock_reads_blind_never_failed(tmp_path):
     d = collect_dispositions()["cron_verdict_stale"]
     assert d["disp"] == "indeterminate", d
     assert "lehua" in d["reason"] and "skew" in d["reason"]
+
+
+# deferred spool-stamp-one-finite-seam-2026-11-26
+@pytest.mark.parametrize("field,raw", [
+    ("fetched_at", "NaN"), ("fetched_at", "Infinity"), ("fetched_at", "true"),
+    ("clock_now", "NaN"), ("clock_now", "1" + "0" * 400), ("clock_now", '"soon"'),
+], ids=["fa-nan", "fa-inf", "fa-bool", "clock-nan", "clock-10e400", "clock-str"])
+def test_a_non_finite_stamp_reads_blind_never_judged(tmp_path, field, raw):
+    """A NaN fetched_at passed `age < 0 or age > STALE` (every NaN comparison
+    is False) -> judged fresh forever from a stale schedule; a NaN clock.now
+    skipped the skew gate; 10**400 raised in the judge."""
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    text = (tmp_path / "lehua.json").read_text()
+    doc = json.loads(text)
+    if field == "fetched_at":
+        text = text.replace(json.dumps(doc["fetched_at"]), raw, 1)
+    else:
+        text = text[:-1] + ', "clock": {"now": %s}}' % raw
+    (tmp_path / "lehua.json").write_text(text)
+    assert probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path) == []
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate", d
+    assert "lehua" in d["reason"]
+    assert d["coverage"]["judged"] == 0, d
+
+
+def test_a_dark_peer_is_counted_once(tmp_path):
+    """11-26: a dark cell counted as judged AND blind -> enrolled=2 for one peer."""
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc["clock"] = {"now": doc["fetched_at"] - 8 * 86400}
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    assert collect_dispositions()["cron_verdict_stale"]["coverage"] == \
+        {"judged": 0, "enrolled": 1}
+
+
+def test_a_non_object_spool_reads_unreadable_not_a_stamp_fault(tmp_path):
+    (tmp_path / "lehua.json").write_text("[]")
+    probe_peer_cron_verdict_stale(now=time.time(), spool_dir=tmp_path)
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert "not a JSON object" in d["reason"], d
+
+
+def test_a_future_stamp_says_clock_fault_not_0m_stale(tmp_path):
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now, age_s=-5000)
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    reason = collect_dispositions()["cron_verdict_stale"]["reason"]
+    assert "in the future" in reason and "0m stale" not in reason, reason
+
+
+@pytest.mark.parametrize("now", [float("nan"), float("inf")], ids=["nan", "inf"])
+def test_a_non_finite_caller_clock_is_indeterminate(tmp_path, now):
+    """r2: a NaN now made every age NaN -> every peer judged fresh."""
+    _spool(tmp_path, "lehua", _verdict("OK", 60, time.time()), now=time.time())
+    assert probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path) == []
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate" and "clock" in d["reason"], d
+
+
+def test_a_sub_second_future_stamp_never_reads_0s(tmp_path):
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now, age_s=-0.4)
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    reason = collect_dispositions()["cron_verdict_stale"]["reason"]
+    assert "stamp 1s in the future" in reason, reason
+
+
+def test_an_unknown_judge_state_is_blind_not_judged(tmp_path, monkeypatch):
+    import utils.fleet_truth_collector as c
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    monkeypatch.setattr(c, "judge_spooled_schedules",
+                        lambda *a, **k: {"state": "unknown"})
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate" and "unknown judge state" in d["reason"], d
+    assert d["coverage"] == {"judged": 0, "enrolled": 1}
+
+
+def test_the_leg_knows_every_state_the_judge_returns():
+    """hfm #7 closed enum, closed consumer: a new judge state fails HERE."""
+    import inspect
+    import re
+    import utils.fleet_truth_collector as c
+    import utils.watchdog_probes_peer_cron as m
+    judge = set(re.findall(r'"state":\s*"([a-z_]+)"',
+                           inspect.getsource(c.judge_spooled_schedules)))
+    leg = inspect.getsource(m.probe_peer_cron_verdict_stale)
+    known = set(re.search(r'state not in \(([^)]*)\)', leg).group(1)
+                .replace('"', '').replace(' ', '').split(','))
+    assert judge and judge <= known, (judge, known)

@@ -45,8 +45,11 @@ HONEST-FAILURE-MODE CONTRACT
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any, Dict, List, Optional
+
+from utils.finite_stamp import finite  # the ONE finite-stamp rule (11-26)
 
 from utils.watchdog_probe_core import (
     CRON_VERDICT_BAND_FAIL, Signal, note_disposition, note_subject_observed,
@@ -74,7 +77,15 @@ def probe_peer_cron_verdict_stale(
     spool_dir=None,
 ) -> List[Signal]:
     """Emit ``cron_verdict_stale`` for every spooled peer judged ``failed``."""
-    now = time.time() if now is None else now
+    now = finite(time.time() if now is None else now)
+    if now is None:
+        # A NaN clock makes every age NaN, which passes both staleness bounds
+        # -> every peer judged fresh (r2 review, the read_spool rule).
+        note_disposition(
+            "cron_verdict_stale", "indeterminate",
+            reason="peer cron leg: this box's clock is not a finite time",
+            coverage={"judged": 0, "enrolled": len(_declared_targets())})
+        return []
     try:
         from utils.fleet_truth_collector import (
             SPOOL_STALE_S, judge_spooled_schedules,
@@ -121,15 +132,28 @@ def probe_peer_cron_verdict_stale(
             continue
         try:
             doc: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-            fetched_at = float(doc.get("fetched_at") or 0.0)
         except Exception:  # noqa: BLE001 - a corpse is unobservable, not clean
             blind.append(f"{alias}(unreadable)")
+            continue
+        if not isinstance(doc, dict):
+            blind.append(f"{alias}(unreadable: not a JSON object)")
+            continue
+        fetched_at = finite(doc.get("fetched_at"))
+        if fetched_at is None:
+            # NaN passed every bound below (each NaN comparison is False) and
+            # was judged fresh forever from a stale schedule (11-26 review).
+            blind.append(f"{alias}(spool stamp not a finite time)")
             continue
 
         age = now - fetched_at
         if fetched_at <= 0 or age < 0 or age > SPOOL_STALE_S:
-            # A future stamp is as broken as an old one (#74's clock class).
-            blind.append(f"{alias}({int(max(age, 0)) // 60}m stale)")
+            # A future stamp is as broken as an old one (#74's clock class) —
+            # and says so: "0m stale" read as fresh (r1 review).
+            if age < 0:
+                blind.append(f"{alias}(stamp {math.ceil(-age)}s in the "
+                             f"future — clock fault)")
+            else:
+                blind.append(f"{alias}({int(age) // 60}m stale)")
             continue
 
         try:
@@ -146,8 +170,16 @@ def probe_peer_cron_verdict_stale(
         if cell is None:
             # Nothing spooled to say anything about — not blindness.
             continue
-        judged += 1
         state = cell.get("state")
+        if state not in ("failed", "healthy", "dark", "inert"):
+            # Closed enum, closed consumer (hfm #7): a state this leg does not
+            # know was neither observed nor flagged — blind, named.
+            blind.append(f"{alias}(unknown judge state {state!r})")
+            continue
+        if state != "dark":
+            # A dark cell is BLIND below, not judged: counting it both ways
+            # read one peer as enrolled=2 (11-26 seam review).
+            judged += 1
         if state == "failed":
             signals.append(Signal(
                 cls="cron_verdict_stale",

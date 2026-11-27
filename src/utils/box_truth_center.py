@@ -34,6 +34,7 @@ from typing import Callable, List, Optional, Tuple
 from utils import box_truth as bt
 from utils import box_truth_app as app
 from utils import box_truth_reader as br
+from utils.finite_stamp import finite  # the ONE finite-stamp rule (11-26)
 from utils.paths import atomic_write_text_preserving, get_real_user_home
 
 #: The TARGET's grant CLI, found under the first ``app.GRANT_CLI_SEARCH``
@@ -63,10 +64,11 @@ def truth_spool_dir() -> Path:
 def read_spool(alias: str, *, now: Optional[float] = None,
                spool_dir: Optional[Path] = None) -> Optional[dict]:
     """Fresh spool doc for ``alias``, or None (absent / unreadable / stale /
-    wrong schema / stamped in the future). Never raises. The ONE reader both
-    apps' collectors use, so freshness means the same thing everywhere."""
+    wrong schema / stamped in the future / a stamp or caller clock that is
+    not a finite real / JSON nested past the parser). Never raises. The ONE
+    reader both apps' collectors use, so freshness means the same thing
+    everywhere."""
     import json
-    import math
     import time
     if not isinstance(alias, str) or not _ALIAS_RE.match(alias):
         return None   # never a path built from an unvalidated alias (step-8 F5)
@@ -78,26 +80,21 @@ def read_spool(alias: str, *, now: Optional[float] = None,
             return None
         if doc.get("alias") != alias:
             return None   # a doc about another box is never this box's truth (F1)
-        fetched_at = doc.get("fetched_at")
-        # a stamp must be a finite real: bool is an int, NaN fails every
-        # comparison (fresh forever), 10**400 overflows the float maths —
-        # each is THIS box unobservable, never a raise that blinds the rest
-        if isinstance(fetched_at, bool) or not isinstance(fetched_at, (int, float)):
+        # a stamp (and the caller's clock) must be a finite real: bool is an
+        # int, NaN fails every comparison (fresh forever), 10**400 overflows
+        # the float maths — each is THIS box unobservable, never a raise
+        fetched_at = finite(doc.get("fetched_at"))
+        clock = finite(now if now is not None else time.time())
+        if fetched_at is None or clock is None:
             return None
-        try:
-            fetched_at = float(fetched_at)
-        except OverflowError:
-            return None
-        if not math.isfinite(fetched_at):
-            return None
-        age = (now if now is not None else time.time()) - fetched_at
+        age = clock - fetched_at
         # a stamp AHEAD of this reader's clock is a clock fault, never
         # evidence of freshness (honest_failure_modes #6, RTC-less fleet)
         if age < 0 or age > SPOOL_STALE_S:
             return None  # stale = unobservable, never last-known-healthy
         return doc
-    except (OSError, ValueError):
-        return None
+    except (OSError, ValueError, RecursionError):
+        return None   # RecursionError: JSON nested past the parser's stack
 _ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")  # \Z: `$` admits a trailing newline
 
 

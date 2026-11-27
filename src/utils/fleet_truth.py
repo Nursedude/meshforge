@@ -37,6 +37,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+# The ONE finite rule (spool-stamp seam 11-26) — its own stdlib-only module.
+from utils.finite_stamp import finite as _finite
+
 # The Known Blind Spots registry is pure data in its own module; re-exported here.
 from utils.fleet_blind_spots import (  # noqa: F401
     STRUCTURAL_DARK, STRUCTURAL_DARK_STATUSES, blind_spot_scope, resolve_self_app,
@@ -918,15 +921,7 @@ RNS_INGRESS_WINDOW_S = 86400.0
 RNS_INGRESS_STALE_S = 3600.0
 
 
-def _finite(v: Any) -> Optional[float]:
-    """A finite float from remote JSON, else None (bool, NaN, inf, 10**400)."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return None
-    try:
-        f = float(v)
-    except OverflowError:
-        return None
-    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
 
 
 def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
@@ -970,6 +965,14 @@ def _rns_ingress_cell(slo: Optional[Dict[str, Any]],
         eff_now = now
         sc = spool_clock if isinstance(spool_clock, dict) else {}
         pn, fa = _finite(sc.get("peer_now")), _finite(sc.get("fetched_at"))
+        if sc.get("peer_now") is not None and (pn is None or fa is None):
+            # PRESENT but not a finite time: the same verdict as the
+            # schedules cell (one rule, spool-stamp seam r1 11-26), never
+            # "absent" judged against this box's clock.
+            return cell(DARK, source=src,
+                        reason="peer clock (or the fetch stamp) is not a "
+                               "finite time — the ingress ledger's ages are "
+                               "unjudgeable (same tell as the schedules cell)")
         if pn is not None and fa is not None:
             skew = pn - fa
             try:

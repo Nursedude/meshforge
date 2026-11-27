@@ -374,3 +374,61 @@ def test_read_spool_still_accepts_an_integer_stamp(tmp_path):
     (tmp_path / "a.json").write_text(
         '{"schema": "%s", "alias": "a", "fetched_at": 1800000000}' % bc.SPOOL_SCHEMA)
     assert bc.read_spool("a", now=1_800_000_010.0, spool_dir=tmp_path)
+
+
+# deferred spool-stamp-one-finite-seam-2026-11-26: ONE finite rule
+# (utils.finite_stamp.finite) for every remote-spool stamp reader.
+def test_read_spool_bool_stamp_is_refused_where_it_would_read_fresh(tmp_path):
+    """The bool case could not fail before: `now` is chosen so True (=1.0)
+    would be 99 s old — fresh — if the bool guard were dropped."""
+    (tmp_path / "a.json").write_text(
+        '{"schema": "%s", "alias": "a", "fetched_at": true}' % bc.SPOOL_SCHEMA)
+    assert bc.read_spool("a", now=100.0, spool_dir=tmp_path) is None
+
+
+@pytest.mark.parametrize("now", [float("nan"), float("inf"), True],
+                         ids=["nan", "inf", "bool"])
+def test_read_spool_refuses_a_caller_clock_that_is_not_finite(tmp_path, now):
+    """now=NaN made every age NaN, which passes neither bound -> fresh forever."""
+    (tmp_path / "a.json").write_text(
+        '{"schema": "%s", "alias": "a", "fetched_at": 1800000000}' % bc.SPOOL_SCHEMA)
+    assert bc.read_spool("a", now=now, spool_dir=tmp_path) is None
+
+
+def test_read_spool_deeply_nested_json_is_unobservable_not_a_raise(tmp_path):
+    (tmp_path / "a.json").write_text("[" * 100000 + "]" * 100000)
+    assert bc.read_spool("a", now=1_800_000_000.0, spool_dir=tmp_path) is None
+
+
+def test_read_spool_uses_the_one_finite_rule():
+    """hfm #5: one finite rule (utils.finite_stamp) for every remote-stamp
+    reader -- read_spool and fleet_truth share it, no hand copy."""
+    import inspect
+    from utils import finite_stamp, fleet_truth as ft
+    assert bc.finite is finite_stamp.finite
+    assert ft._finite is finite_stamp.finite
+    src = inspect.getsource(bc.read_spool)
+    assert "finite(" in src and "isfinite" not in src
+
+
+@pytest.mark.parametrize("v,want", [
+    (1, 1.0), (1.5, 1.5), (0, 0.0), (-3, -3.0),
+    (True, None), (False, None), (float("nan"), None), (float("inf"), None),
+    (float("-inf"), None), (10 ** 400, None), ("1", None), (None, None), ([], None),
+])
+def test_finite_stamp_rule(v, want):
+    from utils.finite_stamp import finite
+    assert finite(v) == want
+
+
+def test_finite_stamp_is_stdlib_only():
+    """It is imported at module top by the watchdog and every spool reader:
+    nothing beneath it may fail (r1/r2 review: the import seam)."""
+    import ast
+    import pathlib
+    import utils.finite_stamp as m
+    tree = ast.parse(pathlib.Path(m.__file__).read_text())
+    mods = {(n.module or "") if isinstance(n, ast.ImportFrom) else a.name
+            for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+            for a in (n.names if isinstance(n, ast.Import) else [n])}
+    assert mods <= {"__future__", "math", "typing"}, mods

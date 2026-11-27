@@ -322,10 +322,20 @@ def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",
     """
     if not isinstance(section, dict):
         return None
-    if (isinstance(peer_now, (int, float)) and not isinstance(peer_now, bool)
-            and isinstance(fetched_at, (int, float))
-            and not isinstance(fetched_at, bool)):
-        skew = float(peer_now) - float(fetched_at)
+    if peer_now is not None:
+        # PRESENT clock: it must be a finite real, and so must our stamp —
+        # NaN skipped this gate (abs(NaN) > X is False), 10**400 raised, a
+        # string read as absent (spool-stamp seam 11-26). ABSENT = an older
+        # spool, judged as before.
+        from utils.finite_stamp import finite   # the ONE rule (stdlib-only)
+        pn, fa = finite(peer_now), finite(fetched_at)
+        if pn is None or fa is None:
+            return {"state": "dark",
+                    "reason": (f"{alias}'s spooled clock (or this box's fetch "
+                               f"stamp) is not a finite time — verdict ages "
+                               f"are unjudgeable; check the spool writer on "
+                               f"{alias}")}
+        skew = pn - fa
         if abs(skew) > PEER_CLOCK_SKEW_DARK_S:
             return {"state": "dark",
                     "reason": (f"peer clock skew {skew:+.0f}s vs THIS box at "

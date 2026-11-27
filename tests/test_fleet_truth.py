@@ -1472,11 +1472,16 @@ class TestRnsIngressCell:
                "updated_at": self.NOW - 30,
                "senders": {"abcd" + "0" * 28: {"last_seen": self.NOW - 50,
                                                "seen": 1, "refused": float("nan")}}}
-        for clock in (None, {"peer_now": big, "fetched_at": self.NOW}):
+        # clock=None (older spool): judged against this box's clock -> FAILED.
+        # A PRESENT overflowing clock: DARK since the spool-stamp seam r1
+        # (11-26) — one rule with the schedules cell; it still never raises
+        # and never reads absent (this test's 10-09 contract).
+        for clock, want in ((None, ft.FAILED),
+                            ({"peer_now": big, "fetched_at": self.NOW}, ft.DARK)):
             b = self._box(status={"app": {"name": "meshforge"}}, spool_clock=clock,
                           resolution_method="ssh_spool", spool_ingress=raw)
             c = b["subsystems"]["rns_ingress"]
-            assert c.get("absent") is not True and c["state"] == ft.FAILED, c
+            assert c.get("absent") is not True and c["state"] == want, c
 
     def test_review2_counters_that_break_the_writer_invariants_are_unreadable(self):
         def reason(*entries):
@@ -1559,6 +1564,18 @@ class TestRnsIngressCellStaleness:
                       spool_clock={"peer_now": peer_now, "fetched_at": self.NOW - 10})
         c = b["subsystems"]["rns_ingress"]
         assert c["state"] == ft.DARK and "skew" in c["reason"]
+
+    @pytest.mark.parametrize("peer_now", [float("nan"), "soon", True, 10 ** 400],
+                             ids=["nan", "str", "bool", "10e400"])
+    def test_spool_leg_with_an_unreadable_peer_clock_is_dark(self, peer_now):
+        """spool-stamp seam r1 (11-26): a PRESENT clock that is not a finite
+        time was read as ABSENT here while the schedules cell read it dark --
+        two consumers, two rules. Both say dark now."""
+        b = self._box(status={"app": {"name": "meshforge"}},
+                      resolution_method="ssh_spool", spool_ingress=self._raw(self.NOW),
+                      spool_clock={"peer_now": peer_now, "fetched_at": self.NOW - 10})
+        c = b["subsystems"]["rns_ingress"]
+        assert c["state"] == ft.DARK and "clock" in c["reason"], c
 
     def test_spool_leg_windows_against_the_peers_clock(self):
         """A small skew is tolerated and the peer's stamps are judged on the

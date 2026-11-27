@@ -442,6 +442,25 @@ class TestPeerJudgeRefusesASkewedClock:
                 peer_now=now - 25, fetched_at=now)
         assert got["state"] == "healthy", got
 
+    @pytest.mark.parametrize("peer_now,fetched_at", [
+        (float("nan"), "now"), (10 ** 400, "now"), ("soon", "now"),
+        (True, "now"), ("now", float("nan")),
+    ], ids=["pn-nan", "pn-10e400", "pn-str", "pn-bool", "fa-nan"])
+    def test_a_present_but_non_finite_clock_is_dark(self, tmp_path, peer_now,
+                                                    fetched_at):
+        """spool-stamp-one-finite-seam (11-26): NaN skipped the skew gate
+        (abs(NaN) > X is False -> judged), 10**400 raised OverflowError, a
+        string read as ABSENT. Present-but-unreadable is a clock we cannot
+        relate to ours -> dark, never judged."""
+        now = time.time()
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            got = c.judge_spooled_schedules(
+                "lehua", _section(verdicts=_verdict("OK", 60, now)), now=now,
+                peer_now=now if peer_now == "now" else peer_now,
+                fetched_at=now if fetched_at == "now" else fetched_at)
+        assert got["state"] == "dark", got
+        assert "lehua" in got["reason"] and "clock" in got["reason"]
+
     def test_absent_clock_judges_as_before(self, tmp_path):
         """Half-rolled: an older spool carries no clock. No witness means
         today's judgment, not darkness for the whole fleet."""

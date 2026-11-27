@@ -93,6 +93,9 @@ BYTE_IDENTICAL = (
     # fallback. Two copies that drift = the twins name one packet's sender
     # differently. Dependency-free.
     "src/gateway/wire_ids.py",
+    # The ONE finite-stamp rule for remote JSON (spool-stamp seam 11-26):
+    # read_spool, fleet_truth and the collectors judge a peer's stamps by it.
+    "src/utils/finite_stamp.py",
     # The review-provenance gate (pre-push upshift-witness, 2026-11-19). MF's
     # 11-18 `_non_attached` fix never reached MeshAnchor, so MA's leg 2 read
     # "non-author Fable subagent" as a DENIAL and refused a true row — a day
