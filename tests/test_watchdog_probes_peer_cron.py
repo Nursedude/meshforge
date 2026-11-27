@@ -446,3 +446,61 @@ def test_a_hostile_schema_string_is_capped_in_the_reason(tmp_path):
     (tmp_path / "lehua.json").write_text(json.dumps(doc))
     probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
     assert len(collect_dispositions()["cron_verdict_stale"]["reason"]) < 400
+
+
+# P1 (11-27 Fable 3-gate, PRE_EXISTING): `judge_spooled_schedules` returns None
+# when the spool carries no usable `schedules` section — the spool writer's
+# `put()` stores None when the section's reader raised (an unreachable /
+# half-answering peer behind a FRESH `fetched_at`). The leg read that as
+# "nothing to say" and noted nothing, so the local leg's `clean` won the class
+# and a paged FAILED peer cron CLEARED off a reading nobody took (hfm #2).
+_NO_SECTION = [("null", None), ("absent", ...), ("str", "x"), ("list", [])]
+
+
+def _spool_without_section(tmp_path, now, raw):
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    if raw is ...:
+        del doc["schedules"]
+    else:
+        doc["schedules"] = raw
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+
+
+@pytest.mark.parametrize("raw", [r for _, r in _NO_SECTION],
+                         ids=[i for i, _ in _NO_SECTION])
+def test_a_fresh_spool_without_a_cron_section_reads_blind(tmp_path, raw):
+    now = time.time()
+    _spool_without_section(tmp_path, now, raw)
+    assert probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path) == []
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate", d
+    assert "lehua" in d["reason"], d
+    assert d["coverage"] == {"judged": 0, "enrolled": 1}, d
+
+
+def test_a_paged_peer_cron_holds_when_its_section_goes_missing(tmp_path):
+    """END state: the tracker, fed the manager's real two-leg coverage (the
+    LOCAL leg notes `clean` beside us), must HOLD lehua, not clear it."""
+    from utils.watchdog_probe_core import note_disposition
+    from utils.watchdog_runner import SignalTracker, build_coverage
+    now = time.time()
+    _spool(tmp_path, "lehua",
+           _verdict("FAIL", 3600, now) + _verdict("FAIL", 60, now), now=now)
+    tracker = SignalTracker()
+    sigs = []
+    for _ in range(4):
+        reset_dispositions()
+        sigs = probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    assert [s.subject for s in sigs] == ["lehua"]
+    note_disposition("cron_verdict_stale", "clean", reason="local leg")
+    tracker.update(sigs, now=now, coverage=build_coverage(sigs))
+
+    reset_dispositions()
+    _spool_without_section(tmp_path, now, None)
+    sigs = probe_peer_cron_verdict_stale(now=now + 30, spool_dir=tmp_path)
+    note_disposition("cron_verdict_stale", "clean", reason="local leg")
+    active, cleared, held = tracker.update(
+        sigs, now=now + 30, coverage=build_coverage(sigs))
+    assert cleared == [], "a missing cron section must not clear a paged peer"
+    assert held == [("cron_verdict_stale", "lehua")]

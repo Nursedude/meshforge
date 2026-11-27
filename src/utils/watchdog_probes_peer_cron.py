@@ -184,7 +184,15 @@ def probe_peer_cron_verdict_stale(
             continue
 
         if cell is None:
-            # Nothing spooled to say anything about — not blindness.
+            # No usable `schedules` section behind a FRESH stamp. The spool
+            # writer stores None when that section's reader raised (a peer
+            # that half-answered), so this is the channel failing, not the
+            # peer's crons being fine. `continue` here used to note nothing
+            # -> the local leg's `clean` won the class -> a paged FAILED
+            # peer cron CLEARED off a reading nobody took (P1, 11-27 Fable;
+            # hfm #2). Blind, named, held.
+            blind.append(f"{alias}(no cron section in a fresh spool — "
+                         f"the peer's schedules reader did not answer)")
             continue
         state = cell.get("state")
         if state not in ("failed", "healthy", "dark", "inert"):
