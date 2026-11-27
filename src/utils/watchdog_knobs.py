@@ -17,6 +17,9 @@ import re
 logger = logging.getLogger("watchdog")
 
 _rejected_knobs: set = set()
+#: every knob env name a parser has READ this process (rejected or not):
+#: the subjects the ignored-knob probe can positively observe (r3)
+_known_knobs: set = set()
 _PLAIN_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 
@@ -38,6 +41,7 @@ def env_confirm_ticks(env_name: str, default: int) -> int:
     "0", "O") falls back to ``default`` and leaves a WARNING, once per bad
     value: a knob that silently does nothing is a swallow with no witness
     (hfm #9), and the operator believes the retune is live."""
+    _known_knobs.add(env_name)
     raw = os.environ.get(env_name)
     if raw is None:
         return default
@@ -52,6 +56,7 @@ def env_confirm_ticks(env_name: str, default: int) -> int:
 def env_int_at_least(env_name: str, default: int, floor: int) -> int:
     """An integer knob: plain ASCII digits only ("3.0", "+2", "1_0", "-1"
     are not meant), at least ``floor``. Same witness as the other parsers."""
+    _known_knobs.add(env_name)
     raw = os.environ.get(env_name)
     if raw is None:
         return default
@@ -76,6 +81,7 @@ def env_float_above(env_name: str, default: float, floor: float) -> float:
     check, so a multiplier knob could switch its alarm arm off unseen. It
     also takes "1_0", "+3" and non-ASCII digits, which ``env_confirm_ticks``
     rejects: one knob family, one notion of a valid value."""
+    _known_knobs.add(env_name)
     raw = os.environ.get(env_name)
     if raw is None:
         return default
@@ -86,3 +92,8 @@ def env_float_above(env_name: str, default: float, floor: float) -> float:
             return value
     _warn_ignored_knob(env_name, raw, f"a finite number above {floor}", default)
     return default
+
+
+def known_knobs() -> list:
+    """Every knob env name a parser has read in this process, sorted."""
+    return sorted(_known_knobs)

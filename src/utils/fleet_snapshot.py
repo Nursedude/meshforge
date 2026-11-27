@@ -1362,7 +1362,6 @@ def _rns_ingress_block() -> Optional[Dict[str, Any]]:
 # ─────────────────────────────────────────────────────────────────────
 
 _WATCHDOG_STATE_PATH = "/var/lib/meshforge/watchdog.json"
-from utils.status_blocks import WATCHDOG_STALE_S as _WATCHDOG_STALE_S  # noqa: E402  (one constant)
 
 
 def _watchdog_block() -> Dict[str, Any]:

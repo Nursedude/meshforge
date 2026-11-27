@@ -1424,6 +1424,7 @@ def main(argv=None) -> int:
     output_path = _resolve_output_paths(args.output, one_shot=args.one_shot)
 
     if args.one_shot:
+        announce_watchdog_knobs(logger)   # r3 nit: one-shot is how a retune gets checked
         if args.output is None:
             logger.info(
                 "watchdog: one-shot writing %s — distinct from the daemon's "

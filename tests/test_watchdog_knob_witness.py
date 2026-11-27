@@ -322,3 +322,54 @@ def _brain_records(prior_passes):
     recs.append({"ts": prior_passes + 1,
                  "results": [{"id": "t1", "kind": "triage", "ok": False}]})
     return recs
+
+
+# ── review r3 (f669b808..391f9ff7): a corrected knob must CLEAR, a failing
+# probe must not read as "no ignored knob" ──
+def test_an_accepted_knob_is_a_positively_observed_subject():
+    """r3 IMPORTANT: the probe noted nothing, so after a fix + restart the
+    rehydrated knob signal could be HELD while the primary leg was blind."""
+    core.reset_dispositions()
+    wpm.probe_watchdog_knob_ignored(rejected=[], known=[_DRIFT, _PASSES])
+    seen = core.collect_observed_subjects().get("mini_watchdog_source_unwired", [])
+    assert seen == sorted([_DRIFT, _PASSES])
+
+
+def test_a_rejected_knob_is_never_noted_observed():
+    core.reset_dispositions()
+    wpm.probe_watchdog_knob_ignored(rejected=[{"knob": _DRIFT, "value": "nan"}],
+                                    known=[_DRIFT, _PASSES])
+    assert core.collect_observed_subjects()["mini_watchdog_source_unwired"] == [_PASSES]
+
+
+def test_the_parsers_register_every_knob_they_read(monkeypatch):
+    from utils import watchdog_knobs as wk
+    monkeypatch.delenv("MESHFORGE_RNS_RPC_CONFIRM_TICKS", raising=False)
+    resolve_watchdog_knobs()
+    assert "MESHFORGE_RNS_RPC_CONFIRM_TICKS" in wk.known_knobs()
+
+
+def test_a_probe_error_propagates_never_an_empty_clean_list():
+    """r3 IMPORTANT: `except: return []` read exactly like 'no ignored knob'.
+    The raise must reach the runner's isolated() wrapper (counted, indeterminate)."""
+    with pytest.raises(KeyError):
+        wpm.probe_watchdog_knob_ignored(rejected=[{"knob": _DRIFT}], known=[])
+
+
+
+def test_a_corrected_knob_clears_even_while_the_primary_leg_is_blind():
+    """r3 IMPORTANT, end to end: the knob was fixed (no longer rejected), the
+    primary probe is BLIND (indeterminate) — the knob subject still reads
+    observed in the coverage the tracker consults, so its rehydrated signal
+    clears instead of being held. (Coverage attaches observed_subjects only
+    where the class is otherwise blind — by design, runner build_coverage.)"""
+    from utils import watchdog_runner as wr
+    from utils.watchdog_tracker import _class_was_observed
+    cls = "mini_watchdog_source_unwired"
+    core.reset_dispositions()
+    core.note_disposition(cls, "indeterminate", reason="mini process unreadable")
+    sigs = wpm.probe_watchdog_knob_ignored(rejected=[], known=[_DRIFT])
+    coverage = wr.build_coverage(sigs)
+    assert coverage[cls]["observed_subjects"] == [_DRIFT]
+    assert _class_was_observed(coverage, cls, subject=_DRIFT) is True
+    assert _class_was_observed(coverage, cls, subject="mini-dudeai") is False   # still blind

@@ -20,6 +20,7 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid_status,
     note_disposition,
     note_unit_presence_gate,
+    note_subject_observed,
 )
 from utils.watchdog_knobs import env_float_above, env_int_at_least
 
@@ -1429,39 +1430,44 @@ def probe_local_brain_regressed(
 # NO new class (budget 62, operator 11-26): it rides
 # mini_watchdog_source_unwired — 'this watchdog's environment makes its
 # output other than you believe' — with subject = the MESHFORGE_* env name
-# (the existing form's subject is 'mini-dudeai'). It writes NO disposition:
-# the primary probe owns that class's coverage, and a 'clean' from here
-# would overwrite its 'active' (last writer wins).
+# (the existing form's subject is 'mini-dudeai'). It writes no CLASS
+# disposition (the primary probe owns the class's coverage); instead each
+# knob it read and did NOT refuse is noted as a positively OBSERVED
+# subject, so a corrected knob's rehydrated signal clears even while the
+# primary leg is blind (review r3). A raise is NOT swallowed: it reaches
+# the runner's isolated() wrapper, which counts it and marks the class
+# indeterminate — never an empty list that reads as 'no ignored knob'.
 # ─────────────────────────────────────────────────────────────────────
 
-def probe_watchdog_knob_ignored(rejected=None):
-    """Fire one degraded Signal per knob value this process IGNORED.
+def probe_watchdog_knob_ignored(rejected=None, known=None):
+    """Fire one degraded Signal per knob value this process IGNORED, and
+    note every knob read-and-accepted as an observed subject.
 
-    ``rejected`` defaults to ``watchdog_knobs.rejected_knobs()`` (the set the
-    parsers fill as they refuse values). Empty -> no signal (and no
-    disposition: see above). Never raises into the tick."""
+    ``rejected`` / ``known`` default to ``watchdog_knobs.rejected_knobs()`` /
+    ``known_knobs()``. Raises propagate (see the block comment)."""
+    from utils.watchdog_knobs import known_knobs, rejected_knobs
     cls = "mini_watchdog_source_unwired"
-    try:
-        if rejected is None:
-            from utils.watchdog_knobs import rejected_knobs
-            rejected = rejected_knobs()
-        if not rejected:
-            return []
-        out = []
-        for rej in rejected:
-            knob, value = rej["knob"], rej["value"]
-            out.append(Signal(
-                cls=cls,
-                subject=knob,
-                severity="degraded",
-                detail=(
-                    f"{knob}={value!r} is not a value this watchdog accepts, so it is "
-                    f"IGNORED and the default is in use — the retune you set is NOT "
-                    f"live. Fix the value in the watchdog's environment "
-                    f"(systemd drop-in / env file) and restart meshforge-watchdog."
-                ),
-                extra={"knob": knob, "value": value},
-            ))
-        return out
-    except Exception:
-        return []   # never raises into the tick; isolation counts a raise
+    if rejected is None:
+        rejected = rejected_knobs()
+    if known is None:
+        known = known_knobs()
+    bad = {rej["knob"] for rej in rejected}
+    for knob in known:
+        if knob not in bad:
+            note_subject_observed(cls, knob)
+    out = []
+    for rej in rejected:
+        knob, value = rej["knob"], rej["value"]
+        out.append(Signal(
+            cls=cls,
+            subject=knob,
+            severity="degraded",
+            detail=(
+                f"{knob}={value!r} is not a value this watchdog accepts, so it is "
+                f"IGNORED and the default is in use — the retune you set is NOT "
+                f"live. Fix the value in the watchdog's environment "
+                f"(systemd drop-in / env file) and restart meshforge-watchdog."
+            ),
+            extra={"knob": knob, "value": value},
+        ))
+    return out
