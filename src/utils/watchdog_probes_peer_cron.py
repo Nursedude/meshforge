@@ -222,8 +222,8 @@ def probe_peer_cron_verdict_stale(
                 subject=alias,
                 severity="degraded",
                 detail=(f"{alias}: {cell.get('reason') or 'cron verdict unhealthy'} "
-                        f"— judged from the ssh truth spool because this box runs "
-                        f"no watchdog of its own"),
+                        f"— judged from the ssh truth spool"
+                        f"{_watchdog_clause(doc.get('watchdog_expected'))}"),
                 extra={"peer": alias, "via": "truth_spool",
                        # Same loudness vocabulary as the local leg: a peer's
                        # CONCERN is as quiet as ours, its FAIL as loud. An
@@ -247,7 +247,7 @@ def probe_peer_cron_verdict_stale(
     if blind:
         note_disposition(
             "cron_verdict_stale", "indeterminate",
-            reason="peer cron verdicts unobservable: " + ", ".join(blind),
+            reason="peer cron verdicts unobservable: " + _capped_join(blind),
             coverage={"judged": judged, "enrolled": judged + len(blind)})
     elif judged:
         # Positive witness that the leg RAN and saw peers. Without this an
@@ -262,6 +262,35 @@ def probe_peer_cron_verdict_stale(
     return signals
 
 
+#: Whole-reason budget for the blind list (r3 nit 4): each entry is capped,
+#: but nine failed reads joined to ~1.9 KB rode watchdog state every tick.
+_BLIND_REASON_BUDGET = 520
+
+
+def _capped_join(entries: List[str]) -> str:
+    """Join blind entries within the budget; the rest are COUNTED, never
+    silently dropped (coverage still carries the exact enrolled number)."""
+    out: List[str] = []
+    used = 0
+    for i, e in enumerate(entries):
+        if out and used + len(e) + 2 > _BLIND_REASON_BUDGET:
+            return ", ".join(out) + f" (+{len(entries) - i} more)"
+        out.append(e)
+        used += len(e) + 2
+    return ", ".join(out)
+
+
+def _watchdog_clause(expected: Any) -> str:
+    """What the page may say about the peer's own watchdog: only what the
+    peer's export DECLARED (r3, 11-27 — 'runs no watchdog of its own' was
+    printed for 7 of 8 boxes whose role expects one). Undecided says nothing."""
+    if expected is False:
+        return " because this box runs no watchdog of its own"
+    if expected is True:
+        return " (its role also expects a watchdog of its own)"
+    return ""
+
+
 def _no_section_cause(doc: Dict[str, Any]) -> str:
     """Why a fresh spool carries no cron section, from what the spool says.
 
@@ -269,13 +298,13 @@ def _no_section_cause(doc: Dict[str, Any]) -> str:
     unreachable), then the export's own ``section_errors.schedules`` (the
     tripwire withhold, a reader crash), then the bare fact. Peer-supplied
     text, so capped: this reason rides watchdog state."""
-    transport = doc.get("transport")
-    outcome = transport.get("outcome") if isinstance(transport, dict) else None
-    # Only a RECORDED non-ok outcome is a failed read; an unrecorded one is
+    # THE failed-read rule, shared with the /fleet collector (r3 nit 3):
+    # only a RECORDED non-ok outcome is a failed read; an unrecorded one is
     # unknown and must not mask the export's own cause (r2 nit 8).
-    if isinstance(outcome, str) and outcome and outcome != "ok":
-        why = transport.get("reason") or outcome
-        return f"no cron section — read failed: {str(why)[:160]}"
+    from utils.fleet_truth_collector import spool_read_failure
+    why = spool_read_failure(doc)
+    if why:
+        return f"no cron section — read failed: {why[:160]}"
     meta = doc.get("box_truth")
     errs = meta.get("section_errors") if isinstance(meta, dict) else None
     err = errs.get("schedules") if isinstance(errs, dict) else None

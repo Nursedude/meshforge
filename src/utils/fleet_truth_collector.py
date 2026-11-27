@@ -254,11 +254,8 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
                 # The writer records HOW its read ended (S1, 2026-10-14) — a
                 # revoked grant, a wrong host key and a dead box are three
                 # different fixes and must not share one "no response".
-                transport = spool.get("transport")
-                reason = (transport.get("reason")
-                          if isinstance(transport, dict)
-                          and transport.get("outcome") not in (None, "ok") else None)
-                error = (str(reason) if reason else
+                reason = spool_read_failure(spool)
+                error = (reason if reason else
                          f"no response from {display} ({method}); "
                          "ssh spool fresh but empty-handed")
         else:
@@ -321,6 +318,25 @@ def spooled_peer_now(spool: Dict[str, Any]) -> Any:
         return None
     now = clock.get("now") if isinstance(clock, dict) else None
     return PEER_CLOCK_UNREADABLE if now is None else now
+
+
+def spool_read_failure(doc: "Dict[str, Any]") -> "Optional[str]":
+    """How the spool writer's read FAILED, or None if it records no failure.
+
+    THE rule for the spool's ``transport`` field (one predicate, every reader
+    — the /fleet cell and the watchdog peer-cron leg, r3 2026-11-27, hfm #5):
+    only a RECORDED outcome — a non-empty str other than ``"ok"`` — is a
+    failed read. An absent / null / non-string outcome is UNKNOWN, never a
+    failure, so it cannot mask a better cause the export itself recorded.
+    Returns the writer's reason, else the outcome name; uncapped (callers
+    that persist it cap it)."""
+    transport = doc.get("transport") if isinstance(doc, dict) else None
+    if not isinstance(transport, dict):
+        return None
+    outcome = transport.get("outcome")
+    if not isinstance(outcome, str) or not outcome or outcome == "ok":
+        return None
+    return str(transport.get("reason") or outcome)
 
 
 def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",

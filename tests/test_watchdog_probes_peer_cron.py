@@ -619,3 +619,75 @@ def test_an_unrecorded_outcome_falls_through_to_the_exports_cause(tmp_path,
     d = collect_dispositions()["cron_verdict_stale"]
     assert d["disp"] == "indeterminate", d
     assert "tripwire" in d["reason"] and "read failed" not in d["reason"], d
+
+
+# r3 nit 3 (hfm #5): the /fleet collector and this leg read the SAME
+# `transport` field — one rule decides "this read failed", both call it.
+_TRANSPORTS = [
+    ("failed", {"outcome": "unreachable", "reason": "no response from lehua (ssh): t"}, True),
+    ("failed-no-reason", {"outcome": "refused_grant", "reason": None}, True),
+    ("ok", {"outcome": "ok", "reason": None}, False),
+    ("empty-outcome", {"outcome": "", "reason": "ssh: refused"}, False),
+    ("null-outcome", {"outcome": None, "reason": "ssh: refused"}, False),
+    ("int-outcome", {"outcome": 7, "reason": "ssh: refused"}, False),
+    ("not-a-dict", "x", False),
+    ("absent", None, False),
+]
+
+
+@pytest.mark.parametrize("transport,failed", [(t, f) for _, t, f in _TRANSPORTS],
+                         ids=[i for i, _, _ in _TRANSPORTS])
+def test_one_failed_read_rule_for_both_readers(transport, failed):
+    from unittest.mock import patch
+    from utils import fleet_truth_collector as c
+    from utils.fleet_truth_collector import spool_read_failure
+    doc = {"transport": transport}
+    got = spool_read_failure(doc)
+    assert (got is not None) is failed, got
+    spool = {"schema": "truth_spool/v1", "alias": "lehua",
+             "fetched_at": time.time() - 5, "slo": None, "status": None,
+             "raw_watchdog": None, "transport": transport}
+    with patch.object(c, "_http_get_json", return_value=None), \
+         patch.object(c, "_resolve_peer", return_value=("lehua", "dns")), \
+         patch.object(c, "_read_spool", return_value=spool):
+        snap = c._fetch_peer("lehua", is_self=False, port=5000)
+    if failed:
+        assert snap["error"] == got, (snap["error"], got)
+    else:
+        assert "empty-handed" in snap["error"], snap["error"]
+
+
+def test_many_blind_peers_cap_the_whole_reason(tmp_path):
+    """r3 nit 4: each entry was capped, the JOIN was not — nine failed reads
+    wrote ~1.9 KB into watchdog state every tick."""
+    now = time.time()
+    for i in range(9):
+        alias = f"box{i}"
+        _spool(tmp_path, alias, _verdict("OK", 60, now), now=now)
+        doc = json.loads((tmp_path / f"{alias}.json").read_text())
+        doc["schedules"] = None
+        doc["transport"] = {"outcome": "unreachable", "reason": "r" * 500}
+        (tmp_path / f"{alias}.json").write_text(json.dumps(doc))
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert len(d["reason"]) <= 600, len(d["reason"])
+    assert "more" in d["reason"] and "box0" in d["reason"], d["reason"]
+    assert d["coverage"] == {"judged": 0, "enrolled": 9}, d
+
+
+@pytest.mark.parametrize("wde,claim", [(True, False), (False, True), (None, False)],
+                         ids=["runs-watchdog", "no-watchdog", "undecided"])
+def test_the_page_never_claims_a_missing_watchdog_it_cannot_know(tmp_path, wde, claim):
+    """r3 pre_existing: the detail said 'this box runs no watchdog of its own'
+    for every peer — false for 7 of 8 spooled boxes (watchdog_expected=true)."""
+    now = time.time()
+    _spool(tmp_path, "lehua",
+           _verdict("FAIL", 3600, now) + _verdict("FAIL", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc["watchdog_expected"] = wde
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    sigs = []
+    for _ in range(4):
+        sigs = probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    assert len(sigs) == 1
+    assert ("runs no watchdog of its own" in sigs[0].detail) is claim, sigs[0].detail
