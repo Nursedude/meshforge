@@ -2559,11 +2559,6 @@
   "class": "other",
   "count": 1
  },
- "src/utils/watchdog_probes_peer_cron.py::_load_expect::read_text": {
-  "audited": "2026-11-27 line-audited: reads peer_expect.json (last-known watchdog_expected per spooled peer) in the truth spool dir, never the RNS config",
-  "class": "other",
-  "count": 1
- },
  "src/utils/watchdog_probes_peer_cron.py::probe_peer_cron_verdict_stale::read_text": {
   "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
   "class": "other",
