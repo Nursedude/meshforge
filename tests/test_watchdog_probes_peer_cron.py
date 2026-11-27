@@ -511,7 +511,7 @@ def test_a_paged_peer_cron_holds_when_its_section_goes_missing(tmp_path):
 # every section None — and the reason must name the real cause (transport
 # outcome, or the export's own `section_errors.schedules`), not blame a reader.
 # The docs are built by the REAL writer (main + fetch_box), never hand-shaped.
-def _writer_spool(tmp_path, read_result):
+def _writer_spool(tmp_path, read_result, alias="lehua"):
     import importlib.util
     from unittest.mock import patch
     from utils.box_truth_center import Target
@@ -520,10 +520,10 @@ def _writer_spool(tmp_path, read_result):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     home = tmp_path / "home"
-    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh").mkdir(parents=True, exist_ok=True)
     (home / ".ssh" / "meshforge_noc_ed25519").write_text("k")
     spool = tmp_path / "spool"
-    spool.mkdir()
+    spool.mkdir(exist_ok=True)
     real = mod.fetch_box
 
     def fetch(target, *, home):
@@ -531,7 +531,7 @@ def _writer_spool(tmp_path, read_result):
                     expect_of=lambda a: ("SHA256:" + "H" * 43, None),
                     read=lambda alias, expect, key_path=None: read_result)
     with patch.object(mod, "get_real_user_home", return_value=home), \
-         patch.object(mod, "read_targets", return_value=[Target("lehua", True)]), \
+         patch.object(mod, "read_targets", return_value=[Target(alias, True)]), \
          patch.object(mod, "truth_spool_dir", return_value=spool), \
          patch.object(mod, "fetch_box", side_effect=fetch):
         mod.main()
@@ -599,3 +599,84 @@ def test_a_paged_peer_cron_holds_across_a_failed_read(tmp_path):
     note_disposition("cron_verdict_stale", "clean", reason="local leg")
     _a, cleared, held = tracker.update(sigs, now=t2, coverage=build_coverage(sigs))
     assert cleared == [] and held == [("cron_verdict_stale", "lehua")]
+
+
+# Nit 4 (operator 11-27: option B). The leg exists for watchdog-LESS boxes; a
+# box whose own export says `watchdog_expected: true` judges its own crons,
+# so this leg neither judges it (no duplicate subject) nor goes blind on it.
+# A FAILED read carries no role section (watchdog_expected None), so the leg
+# remembers the last value each peer REPORTED on a good read. Unknown (no
+# history, unreadable record) stays BLIND — the direction that holds pages.
+def _good_read(alias, watchdog, verdicts):
+    from utils.box_truth_reader import ReadResult
+    sched = {"crontab_b64": base64.b64encode(_CRONTAB.encode()).decode(),
+             "verdicts_b64": base64.b64encode(verdicts.encode()).decode()}
+    role = {"expected": {"watchdog": watchdog, "http_surface": False}}
+    return ReadResult(alias=alias, outcome="ok", rc=0, pinned=True, doc={
+        "schema": "box_truth/v1",
+        "sections": {"schedules": sched, "role": role}})
+
+
+def _failed_read(alias):
+    from utils.box_truth_reader import ReadResult
+    return ReadResult(alias=alias, outcome="unreachable", rc=255,
+                      stderr_head="Connection timed out", pinned=True)
+
+
+def test_a_box_with_its_own_watchdog_is_left_to_it(tmp_path):
+    now = time.time()
+    fail = _verdict("FAIL", 3600, now) + _verdict("FAIL", 60, now)
+    spool = _writer_spool(tmp_path, _good_read("moc4", True, fail), alias="moc4")
+    _writer_spool(tmp_path, _good_read("lehua", False, _verdict("OK", 60, now)))
+    sigs = []
+    for _ in range(4):
+        reset_dispositions()
+        sigs = probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    assert sigs == [], "moc4's own watchdog owns its crons — no duplicate"
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "clean" and d["coverage"] == {"judged": 1, "enrolled": 1}, d
+    assert "moc4" in d["reason"] and "own watchdog" in d["reason"], d
+
+
+def test_a_failed_read_of_a_watchdog_box_is_not_blind(tmp_path):
+    now = time.time()
+    spool = _writer_spool(tmp_path, _good_read("moc4", True, _verdict("OK", 60, now)),
+                          alias="moc4")
+    probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    reset_dispositions()
+    _writer_spool(tmp_path, _failed_read("moc4"), alias="moc4")
+    assert json.loads((spool / "moc4.json").read_text())["watchdog_expected"] is None
+    probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    d = collect_dispositions().get("cron_verdict_stale")
+    assert d is None or d["disp"] != "indeterminate", d
+
+
+@pytest.mark.parametrize("history", ["field-node", "none", "corrupt"])
+def test_a_failed_read_stays_blind_unless_the_box_said_watchdog(tmp_path, history):
+    now = time.time()
+    spool = tmp_path / "spool"
+    if history == "field-node":
+        _writer_spool(tmp_path, _good_read("lehua", False, _verdict("OK", 60, now)))
+        probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    elif history == "corrupt":
+        _writer_spool(tmp_path, _good_read("lehua", True, _verdict("OK", 60, now)))
+        probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+        recs = [p for p in spool.iterdir() if p.name.startswith("peer_expect")]
+        assert recs, "a good read that said watchdog must be remembered"
+        for p in recs:
+            p.write_text("{not json")
+    reset_dispositions()
+    _writer_spool(tmp_path, _failed_read("lehua"))
+    probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate" and "lehua" in d["reason"], d
+
+
+def test_the_last_known_record_is_not_read_as_a_peer(tmp_path):
+    now = time.time()
+    spool = _writer_spool(tmp_path, _good_read("lehua", True, _verdict("OK", 60, now)))
+    probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    reset_dispositions()
+    probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    d = collect_dispositions().get("cron_verdict_stale")
+    assert d is None or "peer_expect" not in (d.get("reason") or ""), d

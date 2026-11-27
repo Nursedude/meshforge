@@ -101,7 +101,7 @@ def probe_peer_cron_verdict_stale(
         from utils.box_truth_center import _ALIAS_RE
         d = _operator_spool_dir() if spool_dir is None else spool_dir
         files = sorted(p for p in d.glob("*.json")
-                       if not p.name.startswith("cron_debounce."))
+                       if not p.name.startswith(_STATE_PREFIXES))
     except Exception as exc:  # noqa: BLE001 - unobservable, never "healthy"
         note_disposition(
             "cron_verdict_stale", "indeterminate",
@@ -128,7 +128,10 @@ def probe_peer_cron_verdict_stale(
 
     signals: List[Signal] = []
     blind: List[str] = []
+    own_watchdog: List[str] = []
     judged = 0
+    expect = _load_expect(d)
+    expect_dirty = False
     for path in files:
         alias = path.stem
         if not _ALIAS_RE.match(alias):
@@ -179,6 +182,23 @@ def probe_peer_cron_verdict_stale(
                              f"future — clock fault)")
             else:
                 blind.append(f"{alias}({int(age) // 60}m stale)")
+            continue
+
+        # A box whose OWN export says it runs a watchdog judges its own crons
+        # (subject `cron` there); judging it here too made a duplicate subject,
+        # and going blind on its failed reads flapped this class on the
+        # manager (r1 nit 4, operator option B 11-27). A failed read carries
+        # no role (None), so the last value the box REPORTED stands in.
+        # Unknown stays on the judged/blind path — the direction that holds.
+        wde = doc.get("watchdog_expected")
+        if isinstance(wde, bool):
+            if expect.get(alias) is not wde:
+                expect[alias] = wde
+                expect_dirty = True
+        else:
+            wde = expect.get(alias)
+        if wde is True:
+            own_watchdog.append(alias)
             continue
 
         try:
@@ -238,10 +258,12 @@ def probe_peer_cron_verdict_stale(
             # the witness; surface it as partial coverage, never as health.
             blind.append(f"{alias}({cell.get('reason') or 'dark'})")
 
+    left = (f"; {len(own_watchdog)} left to their own watchdog: "
+            + ", ".join(own_watchdog)) if own_watchdog else ""
     if blind:
         note_disposition(
             "cron_verdict_stale", "indeterminate",
-            reason="peer cron verdicts unobservable: " + ", ".join(blind),
+            reason="peer cron verdicts unobservable: " + ", ".join(blind) + left,
             coverage={"judged": judged, "enrolled": judged + len(blind)})
     elif judged:
         # Positive witness that the leg RAN and saw peers. Without this an
@@ -251,9 +273,48 @@ def probe_peer_cron_verdict_stale(
         # only ever ADDS the coverage counts.
         note_disposition(
             "cron_verdict_stale", "clean",
-            reason="judged " + str(judged) + " spooled peer(s); none failing",
+            reason=("judged " + str(judged) + " spooled peer(s); none failing"
+                    + left),
             coverage={"judged": judged, "enrolled": judged})
+    # Only own-watchdog peers: say NOTHING (the local leg owns the class here);
+    # `inert` would outrank the local `clean` and read the class unwatched.
+    if expect_dirty:
+        _save_expect(d, expect)
     return signals
+
+
+#: Per-box state files in the spool dir that are NOT peers' spool docs.
+_EXPECT_FILE = "peer_expect.json"
+_STATE_PREFIXES = ("cron_debounce.", "peer_expect.")
+
+
+def _load_expect(d) -> Dict[str, bool]:
+    """alias -> the last ``watchdog_expected`` that box REPORTED on a good read.
+
+    Unreadable / absent / malformed -> {} (no history), which keeps a failed
+    read BLIND: forgetting can only hold a page, never clear one."""
+    try:
+        raw = json.loads((d / _EXPECT_FILE).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no history is the safe direction
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items()
+            if isinstance(k, str) and isinstance(v, bool)}
+
+
+def _save_expect(d, expect: Dict[str, bool]) -> None:
+    """Persist on change only. A failed write is logged (the witness) and
+    costs nothing worse than the next failed read reading blind."""
+    import logging
+    from utils.paths import atomic_write_text_preserving
+    try:
+        atomic_write_text_preserving(
+            d / _EXPECT_FILE, json.dumps(expect, sort_keys=True) + "\n")
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "peer cron leg: could not record last-known watchdog_expected "
+            "in %s: %s", d, exc)
 
 
 def _no_section_cause(doc: Dict[str, Any]) -> str:
