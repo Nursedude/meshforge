@@ -24,6 +24,8 @@ import datetime
 import json
 import os
 
+from utils.finite_stamp import finite  # the ONE stamp rule (P3, 11-27)
+
 from ._util import (APP_FLEET_PRESET, APP_MINI_UNIT, APP_REPO_DEFAULT,
                     APP_REPO_ENV, READ_JSON_NOT_FOUND, operator_home,
                     read_json)
@@ -375,18 +377,19 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
     brief = _read_text(brief_path)
     state, _ = read_json(state_path)
     last_tick: float | None = None
+    tick_present = False
     if isinstance(state, dict):
         lt = state.get("last_tick_ts")
         if lt:
-            try:
-                last_tick = float(lt)
-            except (TypeError, ValueError):
-                last_tick = None
+            tick_present = True
+            # finite(), never float() (P3, 11-27): NaN made every age compare
+            # False -> 🟢 FRESH over a broken writer; inf / 10**400 raised.
+            last_tick = finite(lt)
 
     # Nothing here at all → stay silent (don't inject noise on a mini-less box)
     # — EXCEPT an overdue backlog, which is the operator's, not mini's, and must
     # not be hidden just because this box runs no watcher.
-    if brief is None and last_tick is None:
+    if brief is None and not tick_present:
         return handoff + backlog
 
     age = _age_str(now_ts, last_tick)

@@ -36,6 +36,8 @@ import subprocess
 import sys
 import time
 
+from utils.finite_stamp import finite  # the ONE stamp rule (P3, 11-27)
+
 from ._util import (APP_HISTORY_RELPATH, APP_STATE_RELPATH,
                     app_for_state_relpath, app_state_candidate_paths,
                     app_state_candidates, read_json, resolve_home)
@@ -130,8 +132,10 @@ def parse_claw_posture(claw: dict | None, now_ts: float,
     """
     if not isinstance(claw, dict) or not claw:
         return None
-    ts = claw.get("captured_at")
-    age_s = (now_ts - float(ts)) if isinstance(ts, (int, float)) else None
+    # finite(), never isinstance (P3): a NaN age failed `> stale` -> "fresh";
+    # 10**400 / inf raised in the age formatter; bool read as 1970.
+    ts = finite(claw.get("captured_at"))
+    age_s = (now_ts - ts) if ts is not None else None
     if age_s is None:
         status = "unknown"
     elif age_s > claw_stale_s:
@@ -177,7 +181,11 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
     for back-compat with callers that pass/read a single tick.
     """
     state = state if isinstance(state, dict) else {}
-    last_tick = state.get("last_tick_ts")
+    raw_tick = state.get("last_tick_ts")
+    # finite(), never float() (P3): NaN failed `> stale_s` -> "fresh", and
+    # inf / 10**400 raised out of the whole pane. Present-but-not-a-time is
+    # its own status: the box answered, its freshness is UNOBSERVABLE.
+    last_tick = finite(raw_tick)
     rules = state.get("rules") or {}
     active = [
         {"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
@@ -185,9 +193,11 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
         for rs in rules.values()
         if isinstance(rs, dict) and rs.get("currently_active")
     ]
-    if not last_tick:
+    if not raw_tick:
         status = "no_state"
-    elif (now_ts - float(last_tick)) > stale_s:
+    elif last_tick is None:
+        status = "unknown"
+    elif (now_ts - last_tick) > stale_s:
         status = "stale"
     else:
         status = "fresh"
@@ -527,13 +537,14 @@ _BANNER = {
     "fresh": "🟢",
     "stale": "🔴",
     "no_state": "⚪",
+    "unknown": "⚠️",
     "no_state_file": "—",
     "unreachable": "❌",
     "declared_off": "💤",
 }
 #: problems first, healthy last; then alpha by host within a bucket. A box
 #: declared off on purpose is not a problem, so it sorts after the healthy.
-_ORDER = {"unreachable": 0, "stale": 1, "no_state": 2, "no_state_file": 3,
+_ORDER = {"unreachable": 0, "stale": 1, "unknown": 1, "no_state": 2, "no_state_file": 3,
           "fresh": 4, "declared_off": 5}
 
 
@@ -577,7 +588,8 @@ _CLAW_BANNER = {"fresh": "🟢", "stale": "🔴", "unreachable": "❌", "unknown
 
 
 def _fmt_uptime(s) -> str:
-    if not isinstance(s, (int, float)):
+    s = finite(s)          # device-supplied: NaN / inf / 10**400 raised (P3)
+    if s is None:
         return "?"
     h = int(s // 3600)
     return f"{h}h" if h < 48 else f"{h // 24}d"
@@ -595,6 +607,11 @@ def _claw_line(c: dict) -> str:
     if c["status"] == "unreachable":
         return (f"    · 🦞 {dev}: {banner} UNREACHABLE — claw did not answer "
                 f"at last capture ({c['age']} ago)")
+    if c["status"] == "unknown":
+        # P3: no finite capture time — its numbers fell through to the healthy
+        # card below, current-looking figures from a capture of unknown age.
+        return (f"    · 🦞 {dev}: {banner} capture time UNKNOWN — captured_at "
+                f"is not a finite time; numbers withheld")
     parts = []
     if c.get("uptime_s") is not None:
         parts.append(f"up {_fmt_uptime(c['uptime_s'])}")
@@ -683,11 +700,14 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
     counts: dict[str, int] = {}
     for p in postures:
         counts[p["status"]] = counts.get(p["status"], 0) + 1
+    # The vocabulary is _BANNER's keys — ONE list (P3: a hardcoded copy here
+    # omitted the new `unknown`, and a box rendered under "no boxes"). A
+    # status outside it is still COUNTED, loudly, never silently dropped.
+    known = [s for s in _BANNER if counts.get(s)]
+    stray = sorted(s for s in counts if s not in _BANNER)
     summary = " · ".join(
-        f"{_BANNER.get(s, '?')} {counts[s]} {s}"
-        for s in ("fresh", "stale", "no_state", "no_state_file", "unreachable",
-                  "declared_off")
-        if counts.get(s)
+        [f"{_BANNER[s]} {counts[s]} {s}" for s in known]
+        + [f"? {counts[s]} {s} (unrendered status)" for s in stray]
     ) or "no boxes"
 
     # "watchers", never "posture": *posture* is the DECLARED per-box state
@@ -726,6 +746,16 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
             lines.append(f"{banner} **{p['host']}**{tag} — "
                          + (p.get("error") or _no_state_error()))
             _append_claw(lines, p)  # a state-less box may still run a claw
+            _append_sdr(lines, p)
+            continue
+        if p["status"] == "unknown":
+            # P3: a tick that is not a finite time. Its numbers are not shown —
+            # nothing can say they are current.
+            lines.append(f"{banner} **{p['host']}**{tag} — freshness UNKNOWN: "
+                         f"last_tick_ts is not a finite time; the daemon's state "
+                         f"writer is suspect"
+                         + _declared_suffix(p))
+            _append_claw(lines, p)
             _append_sdr(lines, p)
             continue
         if p["status"] == "no_state":
@@ -843,7 +873,8 @@ def build_box_deep(host: str, state: dict, history: list[dict], now_ts: float,
     Reuses brief.recent_escalations (with_ts) so the deep feed and the per-box
     brief never disagree on what's an escalation."""
     posture = parse_state_posture(host, state, now_ts, stale_s, self_box)
-    stale = posture["status"] == "stale"
+    # `unknown` cannot vouch the box is live either (P3)
+    stale = posture["status"] in ("stale", "unknown")
     # Mark each escalation with whether its (rule, subject) is STILL active on
     # that box, using the box's own rules state — the same SSOT the per-box
     # brief splits on. Without this the deep feed listed cleared conditions

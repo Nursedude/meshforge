@@ -45,6 +45,7 @@ _get_connection_manager, _ConnectionMode, _HAS_MESHTASTIC_CONN = safe_import(
 # The transforms + thresholds live in the SHARED utils.status_blocks
 # (byte-identical with MeshAnchor, 2026-10-15); re-exported here for the
 # existing importers.
+from utils.finite_stamp import finite  # noqa: E402 -- the ONE stamp rule (P3)
 from utils.status_blocks import (  # noqa: E402,F401
     FUTURE_TS_SLACK_S, MINI_STALE_S, WATCHDOG_STALE_S, mini_block_from_payload,
     radio_connection_from_probe, tty_held, usb_radio_devices,
@@ -549,15 +550,17 @@ class StatusEndpointsMixin:
                     "file": getattr(path, "name", str(path)),
                     "reason": "malformed_json: not an object"}
 
-        ts = payload.get("captured_at")
+        # finite(), never isinstance (P3, 11-27): NaN read ok age 0, 10**400
+        # raised, bool read as 1970 — the status_blocks P2 class, third reader.
+        ts = finite(payload.get("captured_at"))
         now_v = time.time()
         age_s: Optional[float] = None
         future = False
-        if isinstance(ts, (int, float)):
+        if ts is not None:
             # Beyond-slack future ts = clock skew (B7): the max(0.0, ...)
             # clamp would otherwise read it fresh through the skew window.
-            future = float(ts) > now_v + FUTURE_TS_SLACK_S
-            age_s = max(0.0, now_v - float(ts))
+            future = ts > now_v + FUTURE_TS_SLACK_S
+            age_s = max(0.0, now_v - ts)
         # Missing/non-numeric captured_at is NOT "never stale" — it means the
         # freshness of this tick is unobservable, and an unobservable capture
         # must not ride `reachable` green forever (honest_failure_modes #2;
@@ -574,7 +577,8 @@ class StatusEndpointsMixin:
         block = {
             "installed": True,
             "ok": tick_ok and not stale and not no_ts and not future,
-            "captured_at": ts,
+            # raw when finite (an int stays an int); never NaN/inf (not JSON)
+            "captured_at": payload.get("captured_at") if ts is not None else None,
             "captured_iso": payload.get("captured_iso"),
             "age_s": age_s,
             "host": payload.get("host"),
