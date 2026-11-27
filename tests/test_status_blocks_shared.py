@@ -32,3 +32,55 @@ def test_only_a_real_true_is_ok():
 def test_ordinary_ntp_jitter_is_still_fresh():
     b = sb.watchdog_block_from_payload({"ts": time.time() + 30, "ok": True})
     assert b["ok"] is True
+
+
+# P2 (11-27 Fable 3-gate, PRE_EXISTING): both transforms gated the stamp on
+# `isinstance(ts, (int, float))`, off the ONE finite-stamp rule. A spooled
+# `NaN` stamp read ok=True age 0 (NaN > X is False both ways -> HEALTHY);
+# `10**400` (valid JSON) raised OverflowError out of the cross-box fetch;
+# `inf` read stale-not-future. Each is UNOBSERVABLE: not-ok, no raise, and
+# the block never echoes a non-finite ts (NaN in /api/status is not JSON).
+import json  # noqa: E402
+import math  # noqa: E402
+
+import pytest  # noqa: E402
+
+_NON_FINITE = [("nan", float("nan")), ("inf", float("inf")),
+               ("-inf", float("-inf")), ("10**400", 10 ** 400), ("true", True)]
+
+
+@pytest.mark.parametrize("ts", [v for _, v in _NON_FINITE],
+                         ids=[i for i, _ in _NON_FINITE])
+def test_a_non_finite_watchdog_stamp_is_unobservable(ts):
+    b = sb.watchdog_block_from_payload({"ts": ts, "ok": True, "signals": []},
+                                       now=time.time())
+    assert b["ok"] is False, b
+    assert "no_tick_timestamp" in b["reason"], b
+    assert b["age_s"] is None and b["ts"] is None, b
+    json.dumps(b, allow_nan=False)
+
+
+@pytest.mark.parametrize("ts", [v for _, v in _NON_FINITE],
+                         ids=[i for i, _ in _NON_FINITE])
+def test_a_non_finite_mini_stamp_is_unobservable(ts):
+    b = sb.mini_block_from_payload({"last_tick_ts": ts, "rules": {}},
+                                   now=time.time())
+    assert b["ok"] is False, b
+    assert "no_tick_timestamp" in b["reason"], b
+    assert b["age_s"] is None and b["ts"] is None, b
+    json.dumps(b, allow_nan=False)
+
+
+@pytest.mark.parametrize("now", [float("nan"), float("inf"), 10 ** 400],
+                         ids=["nan", "inf", "10**400"])
+def test_a_non_finite_reader_clock_is_unobservable(now):
+    for fn, key in ((sb.watchdog_block_from_payload, "ts"),
+                    (sb.mini_block_from_payload, "last_tick_ts")):
+        b = fn({key: time.time(), "ok": True, "rules": {}}, now=now)
+        assert b["ok"] is False and b["age_s"] is None, (fn.__name__, b)
+
+
+def test_a_finite_stamp_still_reads_fresh_and_keeps_its_value():
+    now = time.time()
+    b = sb.watchdog_block_from_payload({"ts": int(now) - 10, "ok": True}, now=now)
+    assert b["ok"] is True and b["ts"] == int(now) - 10 and not math.isnan(b["age_s"])

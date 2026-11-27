@@ -16,6 +16,8 @@ import os
 import time
 from typing import Any, Dict, Iterable, Optional
 
+from utils.finite_stamp import finite  # the ONE finite-stamp rule (P2, 11-27)
+
 
 WATCHDOG_STALE_S = 300.0  # 5 min — 10x the watchdog's 30s tick
 MINI_STALE_S = 300.0      # 5 min — 10x mini-dudeai's 30s tick (SSOT for both consumers)
@@ -46,16 +48,19 @@ def watchdog_block_from_payload(
         return {"installed": True, "ok": False,
                 "reason": "malformed_json: not an object"}
 
-    ts = payload.get("ts")
-    now_v = now if now is not None else time.time()
+    # finite(), never isinstance: NaN read ok age 0 (every NaN comparison is
+    # False), 10**400 raised out of the cross-box fetch, bool is an int (P2,
+    # 11-27 Fable). A non-finite stamp OR reader clock is unobservable.
+    ts = finite(payload.get("ts"))
+    now_v = finite(now if now is not None else time.time())
     age_s: Optional[float] = None
     future = False
-    if isinstance(ts, (int, float)):
+    if ts is not None and now_v is not None:
         # the mini transform's B7 legs, now that this feeds a CROSS-BOX view
         # (step-8 non-author pass 2026-10-15, F2): a frozen, future-stamped
         # file on an RTC-less box read fresh for the whole skew window
-        future = float(ts) > now_v + FUTURE_TS_SLACK_S
-        age_s = max(0.0, now_v - float(ts))
+        future = ts > now_v + FUTURE_TS_SLACK_S
+        age_s = max(0.0, now_v - ts)
     no_ts = age_s is None
     stale = bool(age_s is not None and age_s > stale_after_s)
     # only a real True is ok; an absent `ok` (legacy writer) still reads ok
@@ -63,7 +68,9 @@ def watchdog_block_from_payload(
     block = {
         "installed": True,
         "ok": ok_field and not stale and not no_ts and not future,
-        "ts": ts,
+        # the RAW value when finite (an int stays an int); never a NaN/inf,
+        # which is not JSON (allow_nan=False consumers refuse the block)
+        "ts": payload.get("ts") if ts is not None else None,
         "age_s": age_s,
         "probe_count": payload.get("probe_count"),
         "signals": payload.get("signals", []),
@@ -81,10 +88,11 @@ def watchdog_block_from_payload(
         block["knobs"] = ({"state": "stale"} if (stale or no_ts or future)
                           else payload["knobs"])
     if no_ts:
-        block["reason"] = ("no_tick_timestamp: watchdog state lacks a numeric ts — "
-                           "freshness unobservable, treating as not-ok")
+        block["reason"] = ("no_tick_timestamp: watchdog state lacks a finite numeric "
+                           "ts (or this reader's clock is not one) — freshness "
+                           "unobservable, treating as not-ok")
     elif future:
-        block["reason"] = (f"tick timestamp in the future ({float(ts) - now_v:.0f}s ahead, "
+        block["reason"] = (f"tick timestamp in the future ({ts - now_v:.0f}s ahead, "
                            f"slack {FUTURE_TS_SLACK_S:.0f}s) — clock skew; freshness "
                            "unobservable until the clock settles")
     elif stale:
@@ -117,15 +125,16 @@ def mini_block_from_payload(
         return {"installed": True, "ok": False,
                 "reason": "malformed_json: not an object"}
 
-    ts = payload.get("last_tick_ts")
-    now_v = now if now is not None else time.time()
+    # finite(), never isinstance (P2, 11-27): see the watchdog transform.
+    ts = finite(payload.get("last_tick_ts"))
+    now_v = finite(now if now is not None else time.time())
     age_s: Optional[float] = None
     future = False
-    if isinstance(ts, (int, float)):
+    if ts is not None and now_v is not None:
         # Beyond-slack future ts = clock skew (B7): the max(0.0, ...) clamp
         # below would otherwise read it fresh/ok for the whole skew window.
-        future = float(ts) > now_v + FUTURE_TS_SLACK_S
-        age_s = max(0.0, now_v - float(ts))
+        future = ts > now_v + FUTURE_TS_SLACK_S
+        age_s = max(0.0, now_v - ts)
     # Missing/non-numeric last_tick_ts is NOT "fresh forever": a valid-JSON
     # state file without the freshness field (schema drift, foreign writer)
     # must read not-ok, not green (honest_failure_modes #2; 07-23 audit —
@@ -152,7 +161,7 @@ def mini_block_from_payload(
     block = {
         "installed": True,
         "ok": not stale and not no_ts and not future,
-        "ts": ts,
+        "ts": payload.get("last_tick_ts") if ts is not None else None,
         "last_tick_iso": payload.get("last_tick_iso"),
         "age_s": age_s,
         "host": payload.get("host"),
@@ -163,12 +172,12 @@ def mini_block_from_payload(
     }
     if no_ts:
         block["reason"] = (
-            "no_tick_timestamp: state lacks a numeric last_tick_ts — "
+            "no_tick_timestamp: state lacks a finite numeric last_tick_ts — "
             "freshness unobservable, treating as not-ok (schema drift?)"
         )
     elif future:
         block["reason"] = (
-            f"tick timestamp in the future ({float(ts) - now_v:.0f}s ahead, "
+            f"tick timestamp in the future ({ts - now_v:.0f}s ahead, "
             f"slack {FUTURE_TS_SLACK_S:.0f}s) — clock skew; freshness "
             f"unobservable until the clock settles"
         )

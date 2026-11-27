@@ -815,3 +815,32 @@ class TestAPresentClockWithoutATimeIsDarkInBothConsumers:
         cell = ft._rns_ingress_cell(None, snap["spool_ingress"], now=now,
                                     spool_clock=snap["spool_clock"])
         assert cell["state"] != ft.DARK, cell
+
+
+# P2 END state (11-27 Fable 3-gate): a spooled raw_watchdog with a non-finite
+# `ts` must render the box's watchdog cell NOT healthy, and must never raise
+# out of `_fetch_peer` (10**400 used to OverflowError the whole peer fetch).
+@pytest.mark.parametrize("ts_json", ["NaN", "Infinity", "1" + "0" * 400],
+                         ids=["nan", "inf", "10**400"])
+def test_a_non_finite_spooled_watchdog_stamp_never_reads_healthy(tmp_path, ts_json):
+    from utils import fleet_truth as ft
+    from utils.box_truth_center import read_spool
+    from utils.watchdog_probe_core import SIGNAL_CLASSES
+    now = time.time()
+    cov = {k: {"disp": "clean"} for k in SIGNAL_CLASSES}
+    body = ('{"schema":"truth_spool/v1","alias":"lehua","fetched_at":%r,'
+            '"clock":{"now":%d},"raw_watchdog":{"ts":%s,"ok":true,'
+            '"probe_count":7,"signals":[],"coverage":%s},'
+            '"watchdog_expected":true,"http_surface_expected":false}'
+            % (now - 10, int(now - 10), ts_json, json.dumps(cov)))
+    d = tmp_path / "spool"
+    d.mkdir()
+    (d / "lehua.json").write_text(body)
+    with patch.object(c, "_http_get_json", return_value=None), \
+         patch.object(c, "_resolve_peer", return_value=("lehua", "dns")), \
+         patch.object(c, "_read_spool",
+                      side_effect=lambda a: read_spool(a, spool_dir=d, now=now)):
+        snap = c._fetch_peer("lehua", is_self=False, port=5000)
+    box = ft.build_box_truth(snap, now=now, signal_classes=list(SIGNAL_CLASSES))
+    cell = box["subsystems"]["watchdog"]
+    assert cell["state"] != ft.HEALTHY, cell
