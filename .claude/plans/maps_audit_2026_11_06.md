@@ -301,3 +301,13 @@ node whose age is unknown, against its own comment "unknown age is held") — it
 `node_tracker.to_geojson:964` emits None, so BELIEVED unreachable today. → H4's live harm BELIEVED
 nil; the cheapest real step is `_too_old` guarding `> 0` itself (red-first), NOT a 29-file
 `or 0`→None migration. Upgrade to MEASURED: count `last_heard == 0` features per source on a live map.
+
+**MEASURED 2026-11-27 04:51 HST (`date`), VolcanoAI live `:5000/api/nodes/geojson`, counts only:**
+49,867 features. Local: meshtastic (`network`, no `source` key) 223 `last_heard` > 0 + **3 == 0**;
+meshcore_public_map 34 > 0; aredn 1 > 0; 0 None / negative / non-finite anywhere. Federated: 49,606, none
+carries `last_heard` (they use `last_seen` = peer write time; all `is_online: False`). The 3 zeros are
+`source_origin: local_radio`, `is_online: False` → page says "Not heard here in <window>", age "Unknown",
+red marker — never online. → **H4 live harm MEASURED ≈ nil** (3 / 226 local radio features, rendered
+not-heard, which is true). PROPOSED (operator decides): `or 0` → None becomes a later cleanup, H4 leaves NOW, H5 next. Side finding (not
+H4): the payload is **29.7 MB**, 49,490 of the federated features are meshcore — a performance-phase
+item, not recorded elsewhere at write (grep of this doc + deferred ledger).
