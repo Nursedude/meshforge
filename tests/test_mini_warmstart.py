@@ -446,3 +446,31 @@ def test_banner_is_never_fresh_off_a_non_finite_tick(tmp_path, ts):
               handoff_path=str(tmp_path / "no-handoff.md"))
     assert "FRESHNESS UNKNOWN" in out, out
     assert "FRESH" not in out.split("FRESHNESS UNKNOWN")[0], out
+
+
+# P3 r1 fold (11-27 Fable): a PRESENT-but-non-finite tick must say so — the
+# banner said "no last_tick_ts in state" (there was one), and with no brief
+# the box went SILENT-or-"ticked (last tick unknown ago)" (tick_present pin).
+def test_a_present_non_finite_tick_is_named_not_called_absent(tmp_path):
+    from mini_dudeai.warmstart import render_warmstart as _rw
+    brief = tmp_path / "brief.md"
+    brief.write_text("# brief\n", encoding="utf-8")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"host": "t", "rules": {},
+                                 "last_tick_ts": float("nan")}), encoding="utf-8")
+    out = _rw(str(brief), str(state), NOW,
+              ledger_path=str(tmp_path / "no-ledger.json"),
+              handoff_path=str(tmp_path / "no-handoff.md"))
+    assert "not a finite time" in out and "no last_tick_ts in state" not in out, out
+
+
+def test_a_non_finite_tick_without_a_brief_is_not_silent(tmp_path):
+    from mini_dudeai.warmstart import render_warmstart as _rw
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"host": "t", "rules": {},
+                                 "last_tick_ts": float("nan")}), encoding="utf-8")
+    out = _rw(str(tmp_path / "no-brief.md"), str(state), NOW,
+              ledger_path=str(tmp_path / "no-ledger.json"),
+              handoff_path=str(tmp_path / "no-handoff.md"))
+    assert "no brief yet" in out and "not a finite time" in out, out
+    assert "unknown ago" not in out, out

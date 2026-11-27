@@ -160,11 +160,10 @@ STALE_AFTER_S = 300
 
 
 def _is_fresh(state: dict, now_ts: float) -> bool:
-    last_tick = state.get("last_tick_ts")
-    try:
-        return bool(last_tick) and (now_ts - float(last_tick)) <= STALE_AFTER_S
-    except (TypeError, ValueError):
-        return False
+    # finite(), never float() (P3 r1): +inf read fresh; 10**400 raised
+    from utils.finite_stamp import finite
+    last_tick = finite(state.get("last_tick_ts"))
+    return last_tick is not None and (now_ts - last_tick) <= STALE_AFTER_S
 
 
 def _posture(state: dict, now_ts: float) -> str:
@@ -173,7 +172,15 @@ def _posture(state: dict, now_ts: float) -> str:
     errs = state.get("error_count", 0)
     if not last_tick:
         return "⚠️ mini-dudeai has no state here (never ticked, or file missing)."
-    age = int(max(0, now_ts - float(last_tick)))
+    # finite(), never float() (P3 r1): NaN / +inf read "🟢 alive … last tick
+    # 0s ago" while _is_fresh said False; 10**400 raised the screen.
+    from utils.finite_stamp import finite
+    t = finite(last_tick)
+    if t is None:
+        return ("⚠️ FRESHNESS UNKNOWN — last_tick_ts is not a finite time; the "
+                "watcher's state writer is suspect: systemctl --user status "
+                "meshforge-mini-dudeai")
+    age = int(max(0, now_ts - t))
     if age > STALE_AFTER_S:
         return (f"🔴 STALE — last tick {age}s ago (>{STALE_AFTER_S}s). The watcher itself may "
                 f"be down: systemctl --user status meshforge-mini-dudeai")

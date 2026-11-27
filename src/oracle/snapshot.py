@@ -192,8 +192,11 @@ def _fill_mini(snap: NocSnapshot, path: Path) -> Optional[dict]:
         if existed:
             snap.mini_ok = False
         return None
-    ts = payload.get("last_tick_ts")
-    age = max(0.0, snap.now - float(ts)) if isinstance(ts, (int, float)) else None
+    # finite(), never isinstance (P3 r1): NaN / inf -> mini_ok True age 0;
+    # 10**400 raised. Not a finite time = freshness unobservable = not ok.
+    from utils.finite_stamp import finite
+    ts = finite(payload.get("last_tick_ts"))
+    age = max(0.0, snap.now - ts) if ts is not None else None
     stale = bool(age is not None and age > MINI_STALE_S)
     rules = payload.get("rules") or {}
     active = [
@@ -210,7 +213,10 @@ def _fill_mini(snap: NocSnapshot, path: Path) -> Optional[dict]:
     snap.mini_stale = stale
     snap.mini_active = active
     snap.mini_error_count = payload.get("error_count")
-    snap.mini_ok = not stale
+    snap.mini_ok = not stale and age is not None
+    if age is None:
+        snap.mini_reason = ("no finite last_tick_ts — freshness unobservable, "
+                            "treating as not-ok")
     if stale and age is not None:
         snap.mini_reason = f"stale {age:.0f}s (threshold {MINI_STALE_S:.0f}s)"
     return payload

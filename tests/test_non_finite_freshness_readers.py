@@ -120,3 +120,120 @@ def test_a_stray_status_is_counted_not_hidden():
                          "age": "5s", "rule_count": 1, "src_errors": 0}],
                         NOW).split("\n", 2)[1]
     assert "1 martian" in head and "no boxes" not in head, head
+
+
+# ── P3 r1 fold (11-27 Fable BY RUNNING, NOT CLEAN ×2) ────────────────────
+# (1) "never raise" was false for the claw card / box state: device- and
+# remote-supplied NON-stamp fields still took the whole pane down.
+_HOSTILE_CLAW = [
+    ("heap-nan", {"device_info": {"heap_free_bytes": float("nan")}}),
+    ("heap-str", {"device_info": {"heap_free_bytes": "n/a"}}),
+    ("heap-huge", {"device_info": {"heap_free_bytes": 10 ** 400}}),
+    ("uptime-nan", {"device_info": {"uptime_s": float("nan")}}),
+    ("wifi-nan", {"device_info": {"wifi_rssi_dbm": float("nan")}}),
+    ("di-list", {"device_info": [1]}),
+    ("ble-str", {"ble": "off"}),
+    ("ble-adv-inf", {"ble": {"adv_age_s": float("inf")}}),
+]
+
+
+@pytest.mark.parametrize("extra", [e for _, e in _HOSTILE_CLAW],
+                         ids=[i for i, _ in _HOSTILE_CLAW])
+def test_one_hostile_claw_tick_never_takes_the_pane_down(extra):
+    from mini_dudeai.rollup import build_rollup, parse_state_posture
+    claw = {"captured_at": NOW - 30, "reachable": True, "device": "dudeclaw-01",
+            **extra}
+    good = parse_state_posture("moc", {"last_tick_ts": NOW - 5, "rules": {}}, NOW)
+    bad = parse_state_posture("moc2", {"last_tick_ts": NOW - 5, "rules": {}}, NOW,
+                              claws=[claw])
+    out = build_rollup([good, bad], NOW)
+    assert "**moc**" in out and "**moc2**" in out and "dudeclaw-01" in out, out
+    assert "nan" not in out.lower().replace("nanoseconds", ""), out
+
+
+@pytest.mark.parametrize("rules", [[1], "x", 5], ids=["list", "str", "int"])
+def test_a_non_object_rules_section_never_takes_the_pane_down(rules):
+    from mini_dudeai.rollup import build_rollup, parse_state_posture
+    p = parse_state_posture("moc", {"last_tick_ts": NOW - 5, "rules": rules}, NOW)
+    assert p["status"] == "fresh" and p["active"] == [], p
+    assert "**moc**" in build_rollup([p], NOW)
+
+
+@pytest.mark.parametrize("s", [float("nan"), float("inf"), 10 ** 400, "x", True],
+                         ids=["nan", "inf", "10**400", "str", "true"])
+def test_uptime_formatter_never_raises(s):
+    from mini_dudeai.rollup import _fmt_uptime
+    assert _fmt_uptime(s) == "?"
+
+
+def test_an_unknown_capture_card_withholds_its_numbers():
+    from mini_dudeai.rollup import _claw_line, parse_claw_posture
+    card = parse_claw_posture({"captured_at": float("nan"), "reachable": True,
+                               "device": "dudeclaw-01",
+                               "device_info": {"uptime_s": 3600 * 60,
+                                               "heap_free_bytes": 108 * 1024}}, NOW)
+    line = _claw_line(card)
+    assert "UNKNOWN" in line and "heap" not in line and "up " not in line, line
+
+
+def test_an_unknown_box_sorts_with_the_problems_and_keeps_its_rows():
+    from mini_dudeai.rollup import build_rollup, parse_state_posture
+    fresh = parse_state_posture("aaa", {"last_tick_ts": NOW - 5, "rules": {}}, NOW)
+    rules = {"r": {"rule_id": "ntfy_ack_stale_any", "subject": "ntfy",
+                   "currently_active": True, "last_detail": "weekly ack"}}
+    unk = parse_state_posture("zzz", {"last_tick_ts": float("nan"), "rules": rules,
+                                      "error_count": 2}, NOW)
+    out = build_rollup([fresh, unk], NOW)
+    assert out.index("**zzz**") < out.index("**aaa**"), out
+    zline = out[out.index("**zzz**"):]
+    assert "ntfy_ack_stale_any" in zline and "src_errors" in zline, out
+
+
+def test_an_unknown_box_cannot_vouch_and_still_contributes_to_the_deep_feed():
+    from mini_dudeai.rollup import build_box_deep, build_deep_feed
+    hist = [{"ts": NOW - 60, "transition": "edge_up", "rule_id": "r1",
+             "subject": "s", "detail": "d", "iso": "x"}]
+    deep = build_box_deep("zzz", {"last_tick_ts": float("nan"), "rules": {}},
+                          hist, NOW)
+    assert deep["status"] == "unknown"
+    assert deep["fires"] and all(f["stale"] for f in deep["fires"]), deep["fires"]
+    out = build_deep_feed([deep], NOW)
+    assert "1 boxes reporting" in out, out
+
+
+# (2) "every reader of a tick stamp" was false: the readers that RENDER a
+# mini liveness verdict (TUI, oracle, audit, brief) had the same hole.
+@pytest.mark.parametrize("ts", _VALS, ids=_IDS)
+def test_tui_mini_posture_never_says_alive_off_a_non_finite_tick(ts):
+    from handlers.mini_dudeai import _is_fresh, _posture
+    st = {"last_tick_ts": ts, "rules": {}}
+    assert _is_fresh(st, NOW) is False
+    line = _posture(st, NOW)
+    assert "🟢" not in line and "alive" not in line, line
+
+
+@pytest.mark.parametrize("ts", _VALS, ids=_IDS)
+def test_oracle_snapshot_mini_is_never_ok_off_a_non_finite_tick(tmp_path, ts):
+    from oracle.snapshot import NocSnapshot, _fill_mini
+    p = tmp_path / "mini_state.json"
+    p.write_text(json.dumps({"last_tick_ts": ts, "rules": {}}), encoding="utf-8")
+    snap = NocSnapshot(now=NOW)
+    _fill_mini(snap, p)
+    assert snap.mini_ok is False and snap.mini_age_s is None, vars(snap)
+
+
+@pytest.mark.parametrize("ts", _VALS, ids=_IDS)
+def test_audit_liveness_never_passes_off_a_non_finite_tick(tmp_path, ts):
+    from mini_dudeai.audit import DEGRADED, AuditContext, check_liveness
+    ctx = AuditContext(artifact_dir=tmp_path, now=NOW,
+                       state={"last_tick_ts": ts, "rules": {}})
+    r = check_liveness(ctx)
+    assert r.status == DEGRADED, r
+    json.dumps(r.to_dict(), allow_nan=False)
+
+
+@pytest.mark.parametrize("ts", _VALS, ids=_IDS)
+def test_brief_still_renders_off_a_non_finite_tick(ts):
+    from mini_dudeai.brief import build_brief
+    out = build_brief({"last_tick_ts": ts, "rules": {}, "host": "t"}, [], NOW)
+    assert isinstance(out, str) and out, out

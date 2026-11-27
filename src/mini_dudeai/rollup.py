@@ -132,8 +132,8 @@ def parse_claw_posture(claw: dict | None, now_ts: float,
     """
     if not isinstance(claw, dict) or not claw:
         return None
-    # finite(), never isinstance (P3): a NaN age failed `> stale` -> "fresh";
-    # 10**400 / inf raised in the age formatter; bool read as 1970.
+    # finite(), never isinstance (P3): NaN / inf / 10**400 RAISED out of the
+    # age formatter (taking the whole pane down); bool read as 1970.
     ts = finite(claw.get("captured_at"))
     age_s = (now_ts - ts) if ts is not None else None
     if age_s is None:
@@ -150,8 +150,11 @@ def parse_claw_posture(claw: dict | None, now_ts: float,
         status = "unreachable"
     else:
         status = "fresh"
-    di = claw.get("device_info") or {}
-    ble = claw.get("ble") or {}
+    # Device-supplied sections: a non-object (`[1]`, "off") raised
+    # AttributeError out of the WHOLE pane (P3 r1, Fable). Not an object =
+    # no fields, never a crash.
+    di = claw.get("device_info") if isinstance(claw.get("device_info"), dict) else {}
+    ble = claw.get("ble") if isinstance(claw.get("ble"), dict) else {}
     return {
         "status": status,
         "device": claw.get("device"),
@@ -182,11 +185,12 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
     """
     state = state if isinstance(state, dict) else {}
     raw_tick = state.get("last_tick_ts")
-    # finite(), never float() (P3): NaN failed `> stale_s` -> "fresh", and
-    # inf / 10**400 raised out of the whole pane. Present-but-not-a-time is
-    # its own status: the box answered, its freshness is UNOBSERVABLE.
+    # finite(), never float() (P3): NaN / inf / 10**400 RAISED out of the
+    # whole pane (the age formatter); bool read as 1970. Present-but-not-a-
+    # time is its own status: the box answered, its freshness UNOBSERVABLE.
     last_tick = finite(raw_tick)
-    rules = state.get("rules") or {}
+    # remote state: a non-object `rules` ([1]) raised out of the whole pane
+    rules = state.get("rules") if isinstance(state.get("rules"), dict) else {}
     active = [
         {"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
          "detail": str(rs.get("last_detail", ""))[:100]}
@@ -615,12 +619,17 @@ def _claw_line(c: dict) -> str:
     parts = []
     if c.get("uptime_s") is not None:
         parts.append(f"up {_fmt_uptime(c['uptime_s'])}")
+    # device-supplied numbers: NaN / "n/a" / 10**400 raised out of the whole
+    # pane at int() (P3 r1); a non-finite value renders as `?`, never a crash
+    heap = finite(c.get("heap_free_bytes"))
     if c.get("heap_free_bytes") is not None:
-        parts.append(f"heap {int(c['heap_free_bytes']) // 1024}k")
+        parts.append(f"heap {int(heap) // 1024}k" if heap is not None else "heap ?")
     if c.get("wifi_rssi_dbm") is not None:
-        parts.append(f"wifi {c['wifi_rssi_dbm']}dBm")
+        w = finite(c.get("wifi_rssi_dbm"))
+        parts.append(f"wifi {w:.0f}dBm" if w is not None else "wifi ?")
     if c.get("ble_adv_age_s") is not None:
-        parts.append(f"ble adv {c['ble_adv_age_s']}s")
+        b = finite(c.get("ble_adv_age_s"))
+        parts.append(f"ble adv {b:.0f}s" if b is not None else "ble adv ?")
     body = " · ".join(parts) if parts else "no fields"
     return f"    · 🦞 {dev}: {banner} {c['status']} · {body} · captured {c['age']} ago"
 
@@ -748,24 +757,22 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
             _append_claw(lines, p)  # a state-less box may still run a claw
             _append_sdr(lines, p)
             continue
-        if p["status"] == "unknown":
-            # P3: a tick that is not a finite time. Its numbers are not shown —
-            # nothing can say they are current.
-            lines.append(f"{banner} **{p['host']}**{tag} — freshness UNKNOWN: "
-                         f"last_tick_ts is not a finite time; the daemon's state "
-                         f"writer is suspect"
-                         + _declared_suffix(p))
-            _append_claw(lines, p)
-            _append_sdr(lines, p)
-            continue
         if p["status"] == "no_state":
             lines.append(f"{banner} **{p['host']}**{tag} — never ticked (no state)")
             _append_claw(lines, p)
             _append_sdr(lines, p)
             continue
-        head = (f"{banner} **{p['host']}**{tag} — {p['status']} · "
-                f"last tick {p['age']} ago · {p['rule_count']} rules · "
-                f"src_errors={p['src_errors']}")
+        if p["status"] == "unknown":
+            # P3: a tick that is not a finite time. Its active rows and errors
+            # still show (a garbled stamp must not hide live conditions, r1).
+            head = (f"{banner} **{p['host']}**{tag} — freshness UNKNOWN "
+                    f"(last_tick_ts is not a finite time — state writer "
+                    f"suspect) · {p['rule_count']} rules · "
+                    f"src_errors={p['src_errors']}")
+        else:
+            head = (f"{banner} **{p['host']}**{tag} — {p['status']} · "
+                    f"last tick {p['age']} ago · {p['rule_count']} rules · "
+                    f"src_errors={p['src_errors']}")
         # Whose daemon answered. Absent = this app's own; a peer app's mini is
         # named, so a healthy foreign box reads as healthy-and-foreign rather
         # than as one of ours (or, before today, as absent).
@@ -976,8 +983,12 @@ def build_deep_feed(results: list[dict], now_ts: float) -> str:
     all_fires = [f for r in results for f in r.get("fires", [])]
     all_esc.sort(key=lambda e: float(e.get("ts") or 0), reverse=True)
     all_fires.sort(key=lambda f: float(f.get("ts") or 0), reverse=True)
-    contributing = [r for r in results if r["status"] in ("fresh", "stale")]
-    skipped = [r for r in results if r["status"] not in ("fresh", "stale")]
+    # Boxes whose state was READ contribute (their fires carry the stale tag);
+    # `unknown` (tick not a finite time) was read too — it listed as skipped
+    # while its fires rendered above (P3 r1).
+    _READ = ("fresh", "stale", "unknown")
+    contributing = [r for r in results if r["status"] in _READ]
+    skipped = [r for r in results if r["status"] not in _READ]
 
     lines = [
         f"# mini-dudeai fleet deep feed — {len(contributing)} boxes reporting",

@@ -228,9 +228,12 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     """
     state = state if isinstance(state, dict) else {}
     rules = state.get("rules") or {}
-    last_tick = state.get("last_tick_ts")
+    # finite(), never float() (P3 r1): NaN / inf / 10**400 raised here and in
+    # _age, so the daemon wrote NO brief at all. Not a finite time = no tick.
+    from utils.finite_stamp import finite
+    last_tick = finite(state.get("last_tick_ts"))
     age = _age(now_ts, last_tick)
-    stale = bool(last_tick and (now_ts - float(last_tick)) > stale_s)
+    stale = bool(last_tick and (now_ts - last_tick) > stale_s)
     host = state.get("host", "?")
 
     stamp = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")

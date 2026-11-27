@@ -205,15 +205,21 @@ def check_liveness(ctx: AuditContext) -> CheckResult:
             f"ticked here, or its store is missing. It is NOT doing its job.",
             {"state_error": ctx.state_error},
         )
-    last = ctx.state.get("last_tick_ts")
-    if not isinstance(last, (int, float)):
+    raw = ctx.state.get("last_tick_ts")
+    # finite(), never isinstance (P3 r1): NaN passed it -> PASS "ticking — last
+    # tick nans ago"; 10**400 raised; bool read as 1970.
+    from utils.finite_stamp import finite
+    last = finite(raw)
+    if last is None:
         return CheckResult(
             "liveness", DEGRADED,
-            "state file has no numeric last_tick_ts — cannot prove mini "
-            "ever ran a tick.",
-            {"last_tick_ts": last},
+            "state file has no finite numeric last_tick_ts — cannot prove "
+            "mini ever ran a tick.",
+            # never echo NaN/inf (not JSON): None/str as-is, else a short repr
+            {"last_tick_ts": raw if raw is None or isinstance(raw, str)
+             else repr(raw)[:40]},
         )
-    age = ctx.now - float(last)
+    age = ctx.now - last
     common = {
         "age_s": round(age, 1),
         "freshness_s": ctx.freshness_s,

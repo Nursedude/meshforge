@@ -382,8 +382,8 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
         lt = state.get("last_tick_ts")
         if lt:
             tick_present = True
-            # finite(), never float() (P3, 11-27): NaN made every age compare
-            # False -> 🟢 FRESH over a broken writer; inf / 10**400 raised.
+            # finite(), never float() (P3, 11-27): NaN / inf / 10**400 RAISED
+            # in the age formatter — no banner at all at session start.
             last_tick = finite(lt)
 
     # Nothing here at all → stay silent (don't inject noise on a mini-less box)
@@ -397,18 +397,23 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
 
     if brief is None:
         # State exists (mini ran) but no brief was generated yet.
+        ticked = (f"mini has ticked (last tick {age} ago)" if last_tick is not None
+                  else "mini's state carries a last_tick_ts that is not a finite "
+                       "time (state writer suspect)")
         return (
             "## mini-dudeai warm start — no brief yet\n"
-            f"mini has ticked (last tick {age} ago) but no brief exists at "
+            f"{ticked} but no brief exists at "
             f"`{brief_path}`. Generate one with "
             f"`python3 -m mini_dudeai --preset {APP_FLEET_PRESET} --brief`.\n"
             + handoff + backlog
         )
 
     if last_tick is None:
+        why = ("last_tick_ts is present but not a finite time — state writer "
+               "suspect" if tick_present else "no last_tick_ts in state")
         banner = (
             "⚠️ **mini-dudeai warm start — FRESHNESS UNKNOWN** "
-            "(no last_tick_ts in state; treat the brief below as historical).\n"
+            f"({why}; treat the brief below as historical).\n"
         )
     elif stale:
         banner = (
