@@ -438,3 +438,11 @@ def test_live_store_guard_is_byte_locked():
     delivery/queue store, in both twins — a twin that loosens it alone lets
     fabricated rows back into that twin's truth source."""
     assert "src/utils/live_store_guard.py" in _load().BYTE_IDENTICAL
+
+
+def test_wire_ids_is_byte_locked():
+    """2026-11-26: the sender/destination wire rule (bbae6ee8) took 11-17 ->
+    11-26 to reach MeshAnchor, and MA's port arrived as a byte copy with no
+    tier holding it (review nit: MA's test said "parity_check is the gate"
+    while nothing gated it). Both bridges must name a sender identically."""
+    assert "src/gateway/wire_ids.py" in _load().BYTE_IDENTICAL

@@ -88,6 +88,11 @@ BYTE_IDENTICAL = (
     # each tick offers to its sender. A leg gate here was reverted twice; one
     # twin re-growing it alone would split the bridges' hold contract (R4-F2).
     "src/gateway/_mesh_bridge_drain.py",
+    # The wire sender/destination rule (bbae6ee8, MA twin 216c26c1 11-26):
+    # numeric `from`/`to` decides alone, the node-DB string only as a
+    # fallback. Two copies that drift = the twins name one packet's sender
+    # differently. Dependency-free.
+    "src/gateway/wire_ids.py",
     # The review-provenance gate (pre-push upshift-witness, 2026-11-19). MF's
     # 11-18 `_non_attached` fix never reached MeshAnchor, so MA's leg 2 read
     # "non-author Fable subagent" as a DENIAL and refused a true row — a day
