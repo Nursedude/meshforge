@@ -599,3 +599,23 @@ def test_a_paged_peer_cron_holds_across_a_failed_read(tmp_path):
     note_disposition("cron_verdict_stale", "clean", reason="local leg")
     _a, cleared, held = tracker.update(sigs, now=t2, coverage=build_coverage(sigs))
     assert cleared == [] and held == [("cron_verdict_stale", "lehua")]
+
+
+@pytest.mark.parametrize("transport", [{"reason": None}, {"outcome": None}, "x"],
+                         ids=["no-outcome", "null-outcome", "not-a-dict"])
+def test_an_unrecorded_outcome_falls_through_to_the_exports_cause(tmp_path,
+                                                                  transport):
+    """r2 nit 8: a transport with no recorded outcome is UNKNOWN, not a failed
+    read — the export's own section error (the tripwire) must still be named."""
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc["schedules"] = None
+    doc["transport"] = transport
+    doc["box_truth"] = {"section_errors": {
+        "schedules": "withheld: credential-shaped content (tripwire)"}}
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate", d
+    assert "tripwire" in d["reason"] and "read failed" not in d["reason"], d

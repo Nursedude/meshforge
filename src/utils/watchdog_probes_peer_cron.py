@@ -44,6 +44,12 @@ HONEST-FAILURE-MODE CONTRACT
   reader all look fresh; treating None as silence let the local leg's
   ``clean`` clear a paged peer (P1, 2026-11-27). The reason names the
   spool's own cause (``transport``, then ``section_errors.schedules``).
+  ACCEPTED (operator 2026-11-27): this holds for peers that run their own
+  watchdog too, so one failed read of any spooled box reads this class
+  indeterminate on the manager until the next good fetch — blind-leaning,
+  never false-healthy. Exempting those boxes off ``watchdog_expected`` was
+  tried and reverted (``c77c37df``): it trusted a DECLARATION, not a live
+  watchdog, and could clear a page on a role change.
 * A peer whose cell is ``dark`` is NOT reported as failing. ``dark`` means the
   confirmation gate has not confirmed yet — waiting one cron cycle is the
   designed behaviour, not a finding.
@@ -264,9 +270,11 @@ def _no_section_cause(doc: Dict[str, Any]) -> str:
     tripwire withhold, a reader crash), then the bare fact. Peer-supplied
     text, so capped: this reason rides watchdog state."""
     transport = doc.get("transport")
-    if isinstance(transport, dict) and transport.get("outcome") != "ok":
-        why = (transport.get("reason") or transport.get("outcome")
-               or "outcome unrecorded")
+    outcome = transport.get("outcome") if isinstance(transport, dict) else None
+    # Only a RECORDED non-ok outcome is a failed read; an unrecorded one is
+    # unknown and must not mask the export's own cause (r2 nit 8).
+    if isinstance(outcome, str) and outcome and outcome != "ok":
+        why = transport.get("reason") or outcome
         return f"no cron section — read failed: {str(why)[:160]}"
     meta = doc.get("box_truth")
     errs = meta.get("section_errors") if isinstance(meta, dict) else None
