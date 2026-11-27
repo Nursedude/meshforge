@@ -204,17 +204,17 @@ def test_the_probe_uses_the_constant_the_report_names(monkeypatch):
 # ── review r2 (ac7b25cd..f669b808) IMPORTANT: nothing an operator reads SHOWED it ──
 # Same defect kind twice (r1: no reader of the file; r2: no renderer of the
 # block) -> the seam is a SIGNAL: every surface already renders signals.
-def test_the_witness_rides_an_existing_class_no_new_one():
-    """operator 11-26: class budget held at 62 — no watchdog_knob_ignored class."""
+def test_the_witness_has_its_own_class():
+    """operator 11-26 (budget 62 -> 63): riding mini_watchdog_source_unwired
+    coupled two producers (review r3/r4) — the witness owns its class."""
     from utils.watchdog_probes import SIGNAL_CLASSES
-    assert "watchdog_knob_ignored" not in SIGNAL_CLASSES
-    assert "mini_watchdog_source_unwired" in SIGNAL_CLASSES
+    assert "watchdog_knob_ignored" in SIGNAL_CLASSES
 
 
 def test_an_ignored_knob_fires_one_degraded_signal_naming_it():
     sigs = wpm.probe_watchdog_knob_ignored([{"knob": _DRIFT, "value": "nan"}])
     assert [(s.cls, s.subject, s.severity) for s in sigs] == [
-        ("mini_watchdog_source_unwired", _DRIFT, "degraded")]
+        ("watchdog_knob_ignored", _DRIFT, "degraded")]
     assert "'nan'" in sigs[0].detail and "NOT live" in sigs[0].detail
 
 
@@ -226,7 +226,9 @@ def test_the_probe_reads_what_the_parsers_refused(monkeypatch):
 
 
 def test_no_ignored_knob_is_clean():
+    core.reset_dispositions()
     assert wpm.probe_watchdog_knob_ignored() == []
+    assert core.collect_dispositions()["watchdog_knob_ignored"]["disp"] == "clean"
 
 
 def test_the_runner_ticks_the_knob_probe():
@@ -242,13 +244,11 @@ def test_every_fleet_preset_escalates_it_without_paging(preset):
             / f"mini_dudeai_rules.{preset}.json")
     doc = _json.loads(path.read_text(encoding="utf-8"))
     rules = doc["rules"] if isinstance(doc, dict) else doc
-    cls = [r for r in rules if r.get("match", {}).get("class") == "mini_watchdog_source_unwired"]
-    knob = [r for r in cls if r["match"]["subject_glob"] == "MESHFORGE_*"]
-    assert len(knob) == 1 and knob[0]["action"]["kind"] == "propose_escalation"
-    # the original rule must not ALSO fire (wrong fix text) on a knob subject
-    other = [r for r in cls if r is not knob[0]]
-    assert other and all("MESHFORGE_*" in r["match"].get("subject_exclude_globs", [])
-                         for r in other)
+    mine = [r for r in rules if r.get("match", {}).get("class") == "watchdog_knob_ignored"]
+    assert len(mine) == 1 and mine[0]["action"]["kind"] == "propose_escalation"
+    # the shared-class era's exclusion is gone: the old rule is untouched
+    old = [r for r in rules if r.get("id") == "mini_watchdog_source_unwired_any"]
+    assert old and "subject_exclude_globs" not in old[0]["match"]
 
 
 # r2 nits: the startup announce is BEHAVIOUR, not a source grep; it names
@@ -326,50 +326,39 @@ def _brain_records(prior_passes):
 
 # ── review r3 (f669b808..391f9ff7): a corrected knob must CLEAR, a failing
 # probe must not read as "no ignored knob" ──
-def test_an_accepted_knob_is_a_positively_observed_subject():
-    """r3 IMPORTANT: the probe noted nothing, so after a fix + restart the
-    rehydrated knob signal could be HELD while the primary leg was blind."""
-    core.reset_dispositions()
-    wpm.probe_watchdog_knob_ignored(rejected=[], known=[_DRIFT, _PASSES])
-    seen = core.collect_observed_subjects().get("mini_watchdog_source_unwired", [])
-    assert seen == sorted([_DRIFT, _PASSES])
-
-
-def test_a_rejected_knob_is_never_noted_observed():
-    core.reset_dispositions()
-    wpm.probe_watchdog_knob_ignored(rejected=[{"knob": _DRIFT, "value": "nan"}],
-                                    known=[_DRIFT, _PASSES])
-    assert core.collect_observed_subjects()["mini_watchdog_source_unwired"] == [_PASSES]
-
-
-def test_the_parsers_register_every_knob_they_read(monkeypatch):
-    from utils import watchdog_knobs as wk
-    monkeypatch.delenv("MESHFORGE_RNS_RPC_CONFIRM_TICKS", raising=False)
-    resolve_watchdog_knobs()
-    assert "MESHFORGE_RNS_RPC_CONFIRM_TICKS" in wk.known_knobs()
 
 
 def test_a_probe_error_propagates_never_an_empty_clean_list():
     """r3 IMPORTANT: `except: return []` read exactly like 'no ignored knob'.
     The raise must reach the runner's isolated() wrapper (counted, indeterminate)."""
     with pytest.raises(KeyError):
-        wpm.probe_watchdog_knob_ignored(rejected=[{"knob": _DRIFT}], known=[])
+        wpm.probe_watchdog_knob_ignored(rejected=[{"knob": _DRIFT}])
 
 
-
-def test_a_corrected_knob_clears_even_while_the_primary_leg_is_blind():
-    """r3 IMPORTANT, end to end: the knob was fixed (no longer rejected), the
-    primary probe is BLIND (indeterminate) — the knob subject still reads
-    observed in the coverage the tracker consults, so its rehydrated signal
-    clears instead of being held. (Coverage attaches observed_subjects only
-    where the class is otherwise blind — by design, runner build_coverage.)"""
+def test_a_fixed_knob_clears_whatever_the_other_class_reads():
+    """r3/r4 IMPORTANT at the root: own class -> clean permits clearing the
+    rehydrated subject even when it is no longer read at all, and another
+    class's blindness cannot hold it."""
     from utils import watchdog_runner as wr
     from utils.watchdog_tracker import _class_was_observed
-    cls = "mini_watchdog_source_unwired"
     core.reset_dispositions()
-    core.note_disposition(cls, "indeterminate", reason="mini process unreadable")
-    sigs = wpm.probe_watchdog_knob_ignored(rejected=[], known=[_DRIFT])
-    coverage = wr.build_coverage(sigs)
-    assert coverage[cls]["observed_subjects"] == [_DRIFT]
-    assert _class_was_observed(coverage, cls, subject=_DRIFT) is True
-    assert _class_was_observed(coverage, cls, subject="mini-dudeai") is False   # still blind
+    core.note_disposition("mini_watchdog_source_unwired", "indeterminate", reason="blind")
+    coverage = wr.build_coverage(wpm.probe_watchdog_knob_ignored(rejected=[]))
+    assert _class_was_observed(coverage, "watchdog_knob_ignored", subject="MESHFORGE_GONE_KNOB")
+    assert coverage["mini_watchdog_source_unwired"]["disp"] == "indeterminate"
+
+
+def test_a_raising_knob_probe_blinds_only_its_own_class(monkeypatch):
+    """r4 IMPORTANT: through the runner's isolated() binding a raise is
+    counted and marks watchdog_knob_ignored indeterminate — never the other class."""
+    from utils import watchdog_isolation as iso
+    from utils import watchdog_runner as wr
+    core.reset_dispositions()
+    core.note_disposition("mini_watchdog_source_unwired", "clean")
+    before = iso.probe_raise_counts.get("probe_watchdog_knob_ignored", 0)
+    monkeypatch.setattr("utils.watchdog_knobs.rejected_knobs", lambda: [{"knob": "X"}])
+    assert wr.probe_watchdog_knob_ignored() == []
+    assert iso.probe_raise_counts["probe_watchdog_knob_ignored"] == before + 1
+    disp = core.collect_dispositions()
+    assert disp["watchdog_knob_ignored"]["disp"] == "indeterminate"
+    assert disp["mini_watchdog_source_unwired"]["disp"] == "clean"

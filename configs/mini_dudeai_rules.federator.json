@@ -828,10 +828,7 @@
       "match": {
         "kind": "signal_class",
         "class": "mini_watchdog_source_unwired",
-        "subject_glob": "*",
-        "subject_exclude_globs": [
-          "MESHFORGE_*"
-        ]
+        "subject_glob": "*"
       },
       "action": {
         "kind": "propose_escalation"
@@ -856,8 +853,8 @@
       "id": "watchdog_knob_ignored_any",
       "match": {
         "kind": "signal_class",
-        "class": "mini_watchdog_source_unwired",
-        "subject_glob": "MESHFORGE_*"
+        "class": "watchdog_knob_ignored",
+        "subject_glob": "*"
       },
       "action": {
         "kind": "propose_escalation"

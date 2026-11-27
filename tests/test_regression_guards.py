@@ -2209,7 +2209,14 @@ class TestSignalClassBudget:
     # non-Nursedude checkouts on all 11 incl. lehua + meshanchor-server; moc5's
     # four from the 08-08 audit are gone). This PAYS for the new class only:
     # the two older debts (rf_leg_silent, bridge_leg_down) are still owed.
-    SIGNAL_CLASS_BUDGET = 62
+    # 2026-11-26: 62 -> 63 for watchdog_knob_ignored, by OPERATOR DECISION
+    # (asked, answered "raise"). Riding mini_watchdog_source_unwired instead
+    # (the first ask's answer) coupled two producers and drew an IMPORTANT in
+    # review r3 AND r4. Measured 2026-11-26 (10 watchdog boxes): the only class
+    # inert 10/10 is oracle_delivery_degraded, still spared (ECOMM runtime,
+    # 09-27); meshtasticd_clock_unrated is the 11-09 observe-only soak, not
+    # dead. Replacement debt now THREE (rf_leg_silent, bridge_leg_down, this).
+    SIGNAL_CLASS_BUDGET = 63
 
     @staticmethod
     def _live_count():

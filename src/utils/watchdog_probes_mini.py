@@ -20,7 +20,6 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid_status,
     note_disposition,
     note_unit_presence_gate,
-    note_subject_observed,
 )
 from utils.watchdog_knobs import env_float_above, env_int_at_least
 
@@ -1427,39 +1426,29 @@ def probe_local_brain_regressed(
 # review r2 IMPORTANT): an IGNORED tuning knob reached watchdog.json and
 # /api/status but nothing an operator reads SHOWED it. A signal is the one
 # reader every surface already renders (honest_status, fleet, mini, map).
-# NO new class (budget 62, operator 11-26): it rides
-# mini_watchdog_source_unwired — 'this watchdog's environment makes its
-# output other than you believe' — with subject = the MESHFORGE_* env name
-# (the existing form's subject is 'mini-dudeai'). It writes no CLASS
-# disposition (the primary probe owns the class's coverage); instead each
-# knob it read and did NOT refuse is noted as a positively OBSERVED
-# subject, so a corrected knob's rehydrated signal clears even while the
-# primary leg is blind (review r3). A raise is NOT swallowed: it reaches
-# the runner's isolated() wrapper, which counts it and marks the class
-# indeterminate — never an empty list that reads as 'no ignored knob'.
+# OWN class watchdog_knob_ignored (operator 11-26, budget 62 -> 63): riding
+# mini_watchdog_source_unwired coupled two producers — one's blindness held
+# the other's fixed subject, its live rule fired the wrong fix text (r3/r4).
+# Own class: `clean` when nothing was refused lets the tracker clear EVERY
+# vanished knob subject (renamed, no longer read, fixed); a raise reaches the
+# runner's isolated() wrapper and marks only THIS class indeterminate.
 # ─────────────────────────────────────────────────────────────────────
 
-def probe_watchdog_knob_ignored(rejected=None, known=None):
-    """Fire one degraded Signal per knob value this process IGNORED, and
-    note every knob read-and-accepted as an observed subject.
+def probe_watchdog_knob_ignored(rejected=None):
+    """One degraded Signal per knob value this process IGNORED; clean if none.
 
-    ``rejected`` / ``known`` default to ``watchdog_knobs.rejected_knobs()`` /
-    ``known_knobs()``. Raises propagate (see the block comment)."""
-    from utils.watchdog_knobs import known_knobs, rejected_knobs
-    cls = "mini_watchdog_source_unwired"
+    ``rejected`` defaults to ``watchdog_knobs.rejected_knobs()``. Raises
+    propagate to the isolation wrapper — never an empty list that reads like
+    'no ignored knob'."""
+    from utils.watchdog_knobs import rejected_knobs
+    cls = "watchdog_knob_ignored"
     if rejected is None:
         rejected = rejected_knobs()
-    if known is None:
-        known = known_knobs()
-    bad = {rej["knob"] for rej in rejected}
-    for knob in known:
-        if knob not in bad:
-            note_subject_observed(cls, knob)
     out = []
     for rej in rejected:
         knob, value = rej["knob"], rej["value"]
         out.append(Signal(
-            cls=cls,
+            cls="watchdog_knob_ignored",   # literal: the wiring gate reads it
             subject=knob,
             severity="degraded",
             detail=(
@@ -1470,4 +1459,6 @@ def probe_watchdog_knob_ignored(rejected=None, known=None):
             ),
             extra={"knob": knob, "value": value},
         ))
+    if not out:
+        note_disposition(cls, "clean")
     return out
