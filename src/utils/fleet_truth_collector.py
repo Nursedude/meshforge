@@ -181,15 +181,13 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
                 # The ledger's stamps are the PEER's clock; carry the same
                 # clock pair the cron judge uses so the cell can window them
                 # honestly (non-author review 2026-10-07, hfm #5).
-                _c = spool.get("clock")
-                if isinstance(_c, dict):
-                    spool_clock = {"peer_now": _c.get("now"),
+                _pn = spooled_peer_now(spool)
+                if _pn is not None:
+                    spool_clock = {"peer_now": _pn,
                                    "fetched_at": spool.get("fetched_at")}
-            _clock = spool.get("clock")
             spool_schedules = judge_spooled_schedules(
                 alias, spool.get("schedules"),
-                peer_now=(_clock.get("now") if isinstance(_clock, dict)
-                          else None),
+                peer_now=spooled_peer_now(spool),
                 fetched_at=spool.get("fetched_at"))
             # Decided by the spool writer (it holds the role catalog). True /
             # False / None-if-undecidable; None must NEVER become False —
@@ -291,6 +289,38 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
 #: that would move a verdict's band is always caught first. ONE constant for
 #: both callers (the peer-leg probe and the /fleet cell).
 PEER_CLOCK_SKEW_DARK_S = 600.0
+
+#: What :func:`spooled_peer_now` returns for a clock section that is PRESENT
+#: but carries no time. A string on purpose: it rides the /fleet snapshot as
+#: JSON, ``finite()`` refuses it (-> dark in every judge), and it is not None
+#: — None is reserved for "no clock section" (an older spool writer).
+PEER_CLOCK_UNREADABLE = "clock section present without a time"
+
+
+def spooled_peer_now(spool: Dict[str, Any]) -> Any:
+    """The peer's spooled clock for the judges, keeping PRESENCE.
+
+    None ONLY when the spool has no clock (key absent or JSON null): an older
+    writer, judged on this box's clock as before. A clock that is present but
+    is not ``{"now": <value>}`` — ``{}``, ``{"now": null}``, a bare string or
+    number — is :data:`PEER_CLOCK_UNREADABLE`, which every judge reads dark.
+    It used to read as absent and be judged on OUR clock (11-26 r3 review).
+    The ONE extractor for the schedules judge, the ingress cell and the
+    watchdog's peer-cron leg (honest_failure_modes #5)."""
+    clock = spool.get("clock")
+    if clock is None:
+        # The writer (fleet_truth_spool.sections_from_doc) spools EVERY key
+        # and maps a non-object section to null, so a box whose clock reader
+        # failed or was withheld arrives as `clock: null` too. Its own account
+        # (box_truth.section_errors) is what tells that apart from an older
+        # export (r1 review of this row, 11-27).
+        bt = spool.get("box_truth")
+        errs = bt.get("section_errors") if isinstance(bt, dict) else None
+        if isinstance(errs, dict) and errs.get("clock"):
+            return PEER_CLOCK_UNREADABLE
+        return None
+    now = clock.get("now") if isinstance(clock, dict) else None
+    return PEER_CLOCK_UNREADABLE if now is None else now
 
 
 def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",

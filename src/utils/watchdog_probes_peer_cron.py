@@ -88,8 +88,11 @@ def probe_peer_cron_verdict_stale(
         return []
     try:
         from utils.fleet_truth_collector import (
-            SPOOL_STALE_S, judge_spooled_schedules,
+            SPOOL_SCHEMA, SPOOL_STALE_S, judge_spooled_schedules,
+            spooled_peer_now,
         )
+        # read_spool's alias rule — the /fleet cell refuses these stems too.
+        from utils.box_truth_center import _ALIAS_RE
         d = _operator_spool_dir() if spool_dir is None else spool_dir
         files = sorted(p for p in d.glob("*.json")
                        if not p.name.startswith("cron_debounce."))
@@ -122,6 +125,11 @@ def probe_peer_cron_verdict_stale(
     judged = 0
     for path in files:
         alias = path.stem
+        if not _ALIAS_RE.match(alias):
+            # e.g. `.lehua.json` / `le hua.json`: judged (and observed) here
+            # while read_spool refuses the alias -- two readers, two answers.
+            blind.append(f"{alias[:40]!r}(not a valid spool alias)")
+            continue
         if alias == LOCAL_CRON_SUBJECT:
             # The local leg emits and observes subject `cron`; a peer spooled
             # under that alias would clear (or raise) the LOCAL verdict on a
@@ -137,6 +145,17 @@ def probe_peer_cron_verdict_stale(
             continue
         if not isinstance(doc, dict):
             blind.append(f"{alias}(unreadable: not a JSON object)")
+            continue
+        # The same two gates read_spool applies (one schema constant, F1):
+        # a doc about ANOTHER box must never be judged as this alias's crons.
+        # Peer-supplied values are capped: this reason rides watchdog state.
+        if doc.get("schema") != SPOOL_SCHEMA:
+            blind.append(f"{alias}(spool schema {repr(doc.get('schema'))[:40]}, "
+                         f"expected {SPOOL_SCHEMA!r})")
+            continue
+        if doc.get("alias") != alias:
+            blind.append(f"{alias}(spool file describes "
+                         f"{repr(doc.get('alias'))[:40]})")
             continue
         fetched_at = finite(doc.get("fetched_at"))
         if fetched_at is None:
@@ -157,12 +176,9 @@ def probe_peer_cron_verdict_stale(
             continue
 
         try:
-            _clock = doc.get("clock")
             cell = judge_spooled_schedules(
                 alias, doc.get("schedules"), now=now,
-                peer_now=(_clock.get("now") if isinstance(_clock, dict)
-                          else None),
-                fetched_at=fetched_at)
+                peer_now=spooled_peer_now(doc), fetched_at=fetched_at)
         except Exception as exc:  # noqa: BLE001
             blind.append(f"{alias}(judge failed: {type(exc).__name__})")
             continue
@@ -196,9 +212,12 @@ def probe_peer_cron_verdict_stale(
                        "verdict_band": (cell.get("band")
                                         or CRON_VERDICT_BAND_FAIL)},
             ))
-        elif state == "healthy":
+        elif state in ("healthy", "inert"):
             # Positively observed — a sibling peer's blindness must not hold
             # THIS peer's recovered subject (2026-10-06, the cron hold).
+            # `inert` too: the peer's crontab was READ and nothing in it can
+            # fail, so a failed->inert peer (crons unwired) releases its old
+            # subject instead of holding it (11-26 r3 review).
             note_subject_observed("cron_verdict_stale", alias)
         elif state == "dark":
             # Unconfirmed / unobservable on the PEER's side. Its own reason is

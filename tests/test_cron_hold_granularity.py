@@ -168,7 +168,9 @@ class TestPeerLegNotesJudgedHealthyPeers:
         d = _blind_peer_spool(tmp_path)          # lehua: stale → blind
         crontab = ("41 * * * * /x/cron_verdict.sh fleet_hosts_drift -- true\n")
         verdicts = (f"{_iso(NOW - 120)} fleet_hosts_drift OK fine\n")
+        # The writer's shape: schema + alias always present (peer leg gates).
         (d / "moc4.json").write_text(json.dumps({
+            "schema": "truth_spool/v1", "alias": "moc4",
             "fetched_at": NOW - 10,
             "schedules": {
                 "crontab_b64": base64.b64encode(crontab.encode()).decode(),

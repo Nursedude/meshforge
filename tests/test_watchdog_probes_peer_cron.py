@@ -347,3 +347,102 @@ def test_the_leg_knows_every_state_the_judge_returns():
     known = set(re.search(r'state not in \(([^)]*)\)', leg).group(1)
                 .replace('"', '').replace(' ', '').split(','))
     assert judge and judge <= known, (judge, known)
+
+
+# deferred peer-cron-leg-reads-via-read-spool-2026-11-26
+@pytest.mark.parametrize("key,value,tell", [
+    ("alias", "moc4", "describes 'moc4'"),
+    ("schema", "truth_spool/v0", "schema"),
+], ids=["other-alias", "wrong-schema"])
+def test_a_doc_that_is_not_this_aliases_spool_reads_blind(tmp_path, key, value,
+                                                          tell):
+    """read_spool refuses a doc about another box (F1) and a wrong schema;
+    this leg parsed the file itself and judged another box's crons as
+    lehua's."""
+    now = time.time()
+    # A PASSING peer: the old code read it clean (a FAIL read dark anyway --
+    # unconfirmed first failure -- and would pass this for the wrong reason).
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc[key] = value
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    assert probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path) == []
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate" and "lehua" in d["reason"], d
+    assert tell in d["reason"], d
+    assert d["coverage"] == {"judged": 0, "enrolled": 1}, d
+
+
+def test_an_inert_peer_is_observed_so_its_old_subject_releases(tmp_path):
+    """failed -> inert (the crons were unwired): inert is a POSITIVE reading
+    (nothing wired can fail), so the subject must release, not hold."""
+    from utils.watchdog_probe_core import collect_observed_subjects
+    now = time.time()
+    _spool(tmp_path, "lehua", "", now=now, crontab="0 * * * * /bin/true\n")
+    assert probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path) == []
+    assert "lehua" in collect_observed_subjects().get("cron_verdict_stale", []), \
+        collect_observed_subjects()
+
+
+@pytest.mark.parametrize("clock", [{"now": None}, {}, "soon", 5],
+                         ids=["now-null", "no-now", "str", "int"])
+def test_a_present_clock_without_a_time_reads_blind(tmp_path, clock):
+    """`clock: {now: null}` read as an OLDER spool (no clock) and was judged
+    on this box's clock. Present = the key is there; it must carry a time."""
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc["clock"] = clock
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    assert probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path) == []
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate" and "clock" in d["reason"], d
+    assert d["coverage"] == {"judged": 0, "enrolled": 1}, d
+
+
+def test_an_absent_or_null_clock_still_judges_as_an_older_spool(tmp_path):
+    """Half-rolled fleet: no clock key (or JSON null) = older writer."""
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc["clock"] = None
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    assert collect_dispositions()["cron_verdict_stale"]["disp"] == "clean"
+
+
+def test_a_clock_the_peer_reported_as_errored_reads_blind(tmp_path):
+    """r1 review: the writer spools a failed clock section as `clock: null`
+    -- the same bytes as an older export. The box's own section_errors is
+    what tells them apart; an errored clock must not be judged on ours."""
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc["clock"] = None
+    doc["box_truth"] = {"section_errors": {"clock": "reader raised OSError"}}
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    assert probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path) == []
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate" and "clock" in d["reason"], d
+
+
+def test_a_stem_read_spool_refuses_is_blind_here_too(tmp_path):
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    (tmp_path / "lehua.json").rename(tmp_path / ".lehua.json")
+    doc = json.loads((tmp_path / ".lehua.json").read_text())
+    doc["alias"] = ".lehua"
+    (tmp_path / ".lehua.json").write_text(json.dumps(doc))
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate" and "not a valid spool alias" in d["reason"], d
+
+
+def test_a_hostile_schema_string_is_capped_in_the_reason(tmp_path):
+    now = time.time()
+    _spool(tmp_path, "lehua", _verdict("OK", 60, now), now=now)
+    doc = json.loads((tmp_path / "lehua.json").read_text())
+    doc["schema"] = "x" * 100_000
+    (tmp_path / "lehua.json").write_text(json.dumps(doc))
+    probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    assert len(collect_dispositions()["cron_verdict_stale"]["reason"]) < 400

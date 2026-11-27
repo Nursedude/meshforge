@@ -330,7 +330,10 @@ class TestPeerCronAliasGuard:
             "%Y-%m-%dT%H:%M:%SZ")
         crontab = "41 * * * * /x/cron_verdict.sh fleet_hosts_drift -- true\n"
         verdicts = f"{iso} fleet_hosts_drift OK fine\n"
+        # The writer's shape (scripts/fleet_truth_spool.py): schema + alias
+        # always present; the peer leg now refuses a doc without them.
         (d / f"{alias}.json").write_text(json.dumps({
+            "schema": "truth_spool/v1", "alias": alias,
             "fetched_at": self.NOW - 10,
             "schedules": {
                 "crontab_b64": base64.b64encode(crontab.encode()).decode(),

@@ -776,3 +776,42 @@ def test_mf_never_reads_a_spool_for_an_invalid_alias(tmp_path, monkeypatch):
     (tmp_path / "x.json").write_text(_json.dumps({     # planted OUTSIDE the spool dir
         "schema": ftc.SPOOL_SCHEMA, "alias": "../x", "fetched_at": _time.time()}))
     assert ftc._read_spool("../x") is None
+
+
+# deferred peer-cron-leg-reads-via-read-spool-2026-11-26
+class TestAPresentClockWithoutATimeIsDarkInBothConsumers:
+    """`clock: {now: null}` (or `{}`) read as an OLDER spool -- no clock --
+    and was judged on THIS box's clock, in the schedules judge AND the
+    ingress cell. Presence is the key, not a usable value."""
+
+    def _snap(self, tmp_path, clock):
+        now = time.time()
+        spool = {"schema": c.SPOOL_SCHEMA, "alias": "lehua",
+                 "fetched_at": now - 30.0, "clock": clock,
+                 "schedules": _section(verdicts=_verdict("OK", 60, now)),
+                 "ingress": {"updated_at": now - 30, "senders": {}},
+                 "status": {"app": {"name": "meshforge"}}, "raw_watchdog": None}
+        with patch.object(c, "_http_get_json", return_value=None), \
+             patch.object(c, "_resolve_peer", return_value=("lehua", "dns")), \
+             patch.object(c, "_read_spool", return_value=spool), \
+             patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            return c._fetch_peer("lehua", is_self=False, port=5000), now
+
+    @pytest.mark.parametrize("clock", [{"now": None}, {}, "soon"],
+                             ids=["now-null", "no-now", "str"])
+    def test_schedules_and_ingress_both_dark(self, tmp_path, clock):
+        from utils import fleet_truth as ft
+        snap, now = self._snap(tmp_path, clock)
+        assert snap["spool_schedules"]["state"] == "dark", snap["spool_schedules"]
+        assert "clock" in snap["spool_schedules"]["reason"]
+        cell = ft._rns_ingress_cell(None, snap["spool_ingress"], now=now,
+                                    spool_clock=snap["spool_clock"])
+        assert cell["state"] == ft.DARK and "clock" in cell["reason"], cell
+
+    def test_null_clock_is_still_an_older_spool(self, tmp_path):
+        from utils import fleet_truth as ft
+        snap, now = self._snap(tmp_path, None)
+        assert snap["spool_schedules"]["state"] == "healthy", snap["spool_schedules"]
+        cell = ft._rns_ingress_cell(None, snap["spool_ingress"], now=now,
+                                    spool_clock=snap["spool_clock"])
+        assert cell["state"] != ft.DARK, cell
