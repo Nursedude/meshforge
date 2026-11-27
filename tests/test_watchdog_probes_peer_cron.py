@@ -504,3 +504,98 @@ def test_a_paged_peer_cron_holds_when_its_section_goes_missing(tmp_path):
         sigs, now=now + 30, coverage=build_coverage(sigs))
     assert cleared == [], "a missing cron section must not clear a paged peer"
     assert held == [("cron_verdict_stale", "lehua")]
+
+
+# P1 review fold (11-27 r1 nits 1+3): the common real trigger is a FAILED ssh
+# read — `fleet_truth_spool.main()` still writes a fresh `fetched_at` with
+# every section None — and the reason must name the real cause (transport
+# outcome, or the export's own `section_errors.schedules`), not blame a reader.
+# The docs are built by the REAL writer (main + fetch_box), never hand-shaped.
+def _writer_spool(tmp_path, read_result):
+    import importlib.util
+    from unittest.mock import patch
+    from utils.box_truth_center import Target
+    path = Path(__file__).resolve().parent.parent / "scripts" / "fleet_truth_spool.py"
+    spec = importlib.util.spec_from_file_location("fleet_truth_spool_p1", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "meshforge_noc_ed25519").write_text("k")
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    real = mod.fetch_box
+
+    def fetch(target, *, home):
+        return real(target, home=home,
+                    expect_of=lambda a: ("SHA256:" + "H" * 43, None),
+                    read=lambda alias, expect, key_path=None: read_result)
+    with patch.object(mod, "get_real_user_home", return_value=home), \
+         patch.object(mod, "read_targets", return_value=[Target("lehua", True)]), \
+         patch.object(mod, "truth_spool_dir", return_value=spool), \
+         patch.object(mod, "fetch_box", side_effect=fetch):
+        mod.main()
+    return spool
+
+
+def _unreachable():
+    from utils.box_truth_reader import ReadResult
+    return ReadResult(alias="lehua", outcome="unreachable", rc=255,
+                      stderr_head="Connection timed out", pinned=True)
+
+
+def test_a_failed_read_reads_blind_and_names_the_transport(tmp_path):
+    spool = _writer_spool(tmp_path, _unreachable())
+    doc = json.loads((spool / "lehua.json").read_text())
+    assert doc["schedules"] is None and doc["transport"]["outcome"] == "unreachable"
+    assert probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool) == []
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate", d
+    assert "no response from lehua" in d["reason"], d
+    assert "schedules reader" not in d["reason"], d
+
+
+def test_a_tripwire_withheld_section_names_the_tripwire(tmp_path):
+    from utils.box_truth_reader import ReadResult
+    res = ReadResult(alias="lehua", outcome="ok", rc=0, pinned=True, doc={
+        "schema": "box_truth/v1", "sections": {},
+        "section_errors": {"schedules":
+                           "withheld: credential-shaped content (tripwire)"}})
+    spool = _writer_spool(tmp_path, res)
+    probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    d = collect_dispositions()["cron_verdict_stale"]
+    assert d["disp"] == "indeterminate" and "tripwire" in d["reason"], d
+
+
+def test_a_hostile_transport_reason_is_capped(tmp_path):
+    from utils.box_truth_reader import ReadResult
+    res = ReadResult(alias="lehua", outcome="unreachable", rc=255,
+                     stderr_head="x" * 100_000, pinned=True)
+    spool = _writer_spool(tmp_path, res)
+    probe_peer_cron_verdict_stale(now=time.time(), spool_dir=spool)
+    assert len(collect_dispositions()["cron_verdict_stale"]["reason"]) < 400
+
+
+def test_a_paged_peer_cron_holds_across_a_failed_read(tmp_path):
+    """END state on the real writer's failed-read doc: held, not cleared."""
+    from utils.watchdog_probe_core import note_disposition
+    from utils.watchdog_runner import SignalTracker, build_coverage
+    now = time.time()
+    _spool(tmp_path, "lehua",
+           _verdict("FAIL", 3600, now) + _verdict("FAIL", 60, now), now=now)
+    tracker = SignalTracker()
+    sigs = []
+    for _ in range(4):
+        reset_dispositions()
+        sigs = probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+    assert [s.subject for s in sigs] == ["lehua"]
+    note_disposition("cron_verdict_stale", "clean", reason="local leg")
+    tracker.update(sigs, now=now, coverage=build_coverage(sigs))
+
+    reset_dispositions()
+    spool = _writer_spool(tmp_path / "t2", _unreachable())
+    t2 = time.time()
+    sigs = probe_peer_cron_verdict_stale(now=t2, spool_dir=spool)
+    note_disposition("cron_verdict_stale", "clean", reason="local leg")
+    _a, cleared, held = tracker.update(sigs, now=t2, coverage=build_coverage(sigs))
+    assert cleared == [] and held == [("cron_verdict_stale", "lehua")]

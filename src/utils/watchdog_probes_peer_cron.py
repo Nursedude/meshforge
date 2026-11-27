@@ -38,6 +38,12 @@ HONEST-FAILURE-MODE CONTRACT
   class is partially blind rather than read a tidy verdict over a peer nobody
   could see (honest_failure_modes #2, #9). When signals are also emitted the
   runner renders that as ``active`` + ``partial``, which is the truthful pair.
+* A FRESH spool with no usable ``schedules`` section (the judge returns
+  None) is UNOBSERVABLE too — never "nothing to say". The spool writer
+  stamps every row, so a failed ssh read, a tripwire withhold or a crashed
+  reader all look fresh; treating None as silence let the local leg's
+  ``clean`` clear a paged peer (P1, 2026-11-27). The reason names the
+  spool's own cause (``transport``, then ``section_errors.schedules``).
 * A peer whose cell is ``dark`` is NOT reported as failing. ``dark`` means the
   confirmation gate has not confirmed yet — waiting one cron cycle is the
   designed behaviour, not a finding.
@@ -184,15 +190,15 @@ def probe_peer_cron_verdict_stale(
             continue
 
         if cell is None:
-            # No usable `schedules` section behind a FRESH stamp. The spool
-            # writer stores None when that section's reader raised (a peer
-            # that half-answered), so this is the channel failing, not the
-            # peer's crons being fine. `continue` here used to note nothing
-            # -> the local leg's `clean` won the class -> a paged FAILED
-            # peer cron CLEARED off a reading nobody took (P1, 11-27 Fable;
-            # hfm #2). Blind, named, held.
-            blind.append(f"{alias}(no cron section in a fresh spool — "
-                         f"the peer's schedules reader did not answer)")
+            # No usable `schedules` section behind a FRESH stamp: the spool
+            # writer stamps every row, so a FAILED ssh read (all sections
+            # None), a tripwire withhold, or a crashed reader all land here.
+            # That is the channel failing, not the peer's crons being fine.
+            # `continue` here used to note nothing -> the local leg's `clean`
+            # won the class -> a paged FAILED peer cron CLEARED off a reading
+            # nobody took (P1, 11-27 Fable; hfm #2). Blind, held, and named
+            # by the REAL cause the spool carries (r1 nit 1).
+            blind.append(f"{alias}({_no_section_cause(doc)})")
             continue
         state = cell.get("state")
         if state not in ("failed", "healthy", "dark", "inert"):
@@ -248,6 +254,26 @@ def probe_peer_cron_verdict_stale(
             reason="judged " + str(judged) + " spooled peer(s); none failing",
             coverage={"judged": judged, "enrolled": judged})
     return signals
+
+
+def _no_section_cause(doc: Dict[str, Any]) -> str:
+    """Why a fresh spool carries no cron section, from what the spool says.
+
+    Order: the transport (a failed read names its fix — grant, identity,
+    unreachable), then the export's own ``section_errors.schedules`` (the
+    tripwire withhold, a reader crash), then the bare fact. Peer-supplied
+    text, so capped: this reason rides watchdog state."""
+    transport = doc.get("transport")
+    if isinstance(transport, dict) and transport.get("outcome") != "ok":
+        why = (transport.get("reason") or transport.get("outcome")
+               or "outcome unrecorded")
+        return f"no cron section — read failed: {str(why)[:160]}"
+    meta = doc.get("box_truth")
+    errs = meta.get("section_errors") if isinstance(meta, dict) else None
+    err = errs.get("schedules") if isinstance(errs, dict) else None
+    if err:
+        return f"no cron section — {str(err)[:160]}"
+    return "no cron section in a fresh spool, and no reason recorded"
 
 
 def _declared_targets() -> List[str]:

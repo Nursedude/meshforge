@@ -348,7 +348,11 @@ def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",
     per-alias debounce file and a capture sink so a peer's verdict can never
     overwrite this box's disposition record. One predicate, two callers.
 
-    Returns None when there is nothing to say (no section spooled).
+    Returns None when no usable section was spooled — a failed read, a
+    tripwire withhold or a crashed reader. That is UNOBSERVABLE, not
+    "nothing to say": a caller that skips None as silence lets an observed
+    caller's ``clean`` clear a paged subject (P1, 2026-11-27 — the watchdog
+    peer leg reads None as blind).
     """
     if not isinstance(section, dict):
         return None
