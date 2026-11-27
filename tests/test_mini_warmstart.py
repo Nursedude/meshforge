@@ -426,3 +426,23 @@ def test_hostname_resolution_strips_the_domain(tmp_path, monkeypatch):
     monkeypatch.setattr("mini_dudeai.warmstart.operator_home", lambda: str(tmp_path))
     monkeypatch.setattr("socket.gethostname", lambda: "BoxA.mf.internal")
     assert "START HERE" in handoff_block(1_800_000_000.0)
+
+
+# P3 twin (MF bfd35f8a, 11-27): the banner took last_tick_ts through float(),
+# so a NaN tick made every age comparison False -> 🟢 FRESH over a broken
+# state writer, and inf / 10**400 raised. finite() -> FRESHNESS UNKNOWN.
+@pytest.mark.parametrize("ts", [float("nan"), float("inf"), float("-inf"),
+                                10 ** 400, True],
+                         ids=["nan", "inf", "-inf", "10**400", "true"])
+def test_banner_is_never_fresh_off_a_non_finite_tick(tmp_path, ts):
+    from mini_dudeai.warmstart import render_warmstart as _rw
+    brief = tmp_path / "brief.md"
+    brief.write_text("# brief\n", encoding="utf-8")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"host": "t", "rules": {}, "last_tick_ts": ts}),
+                     encoding="utf-8")
+    out = _rw(str(brief), str(state), NOW,
+              ledger_path=str(tmp_path / "no-ledger.json"),
+              handoff_path=str(tmp_path / "no-handoff.md"))
+    assert "FRESHNESS UNKNOWN" in out, out
+    assert "FRESH" not in out.split("FRESHNESS UNKNOWN")[0], out
