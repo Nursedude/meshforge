@@ -167,7 +167,7 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
   public: For every message, MeshForge will say which network legs it crossed and whether each one delivered, failed, or cannot be seen.
   status: planned
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
-  v0.8.0-beta = first GitHub Release 7 days after BR-T closed (11-14, provenance) with no fix to a pre-existing defect (rule 3; 2 `fix:` 11-17 → ~11-24, BELIEVED). Gate-5 drill to END (README only, a message crosses mesh↔RNS).
+  v0.8.0-beta = first GitHub Release (rule 3). 11-26: none in Nov (`86c7f05d`, `083b3deb` fix every X ≤11-19); earliest ≈ knob-arc deploy + 7 d. Gate-5 drill to END (README only, a message crosses mesh↔RNS).
 - **MAP-H** [MF] S+F — map never draws healthy when blind; H16+H12 done 11-20; H4a r6 seam deployed 11-21 (`e8c82d8d`); next H4, CoreScope. `plans/maps_audit_2026_11_06.md`
   After H12 (red-first) → NEXT with H4 first (operator 11-14).
 - **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded: the evidence for the harness's second purpose (README "How it's built")
