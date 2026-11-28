@@ -147,7 +147,9 @@ class _Collector:
 @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1"])
 def test_c_a_local_collector_notes_the_id(host):
     from utils._map_collector_meshtastic import MeshtasticDataCollectorMixin
-    iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ME), localNode=None)
+    # slice-2 r6 F1: the INTERFACE's wire facts decide, not the settings
+    iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ME), localNode=None,
+                            hostname=host, portNumber=4403)
     MeshtasticDataCollectorMixin._own_node_id(_Collector(host), iface)
     assert own_radio.own_node() == ME
 
@@ -156,7 +158,8 @@ def test_c_a_remote_collector_never_notes_the_id():
     """r6 #1 (W1): the collector read ANOTHER box's radio; inbox sends via
     localhost -- that id is not this box's own."""
     from utils._map_collector_meshtastic import MeshtasticDataCollectorMixin
-    iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ME), localNode=None)
+    iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ME), localNode=None,
+                            hostname="192.0.2.7", portNumber=4403)
     got = MeshtasticDataCollectorMixin._own_node_id(_Collector("192.0.2.7"), iface)
     assert got == "!6201ce25"                      # the collector still uses it
     assert own_radio.own_node() is None            # the DM judge does not

@@ -254,20 +254,20 @@ class MeshtasticDataCollectorMixin:
         (``myInfo.my_node_num``, else ``localNode.nodeNum``), or None --
         for TAGGING the map's own row (MAP-H H14 r3 F6). Never inferred from
         traffic. The DM judge gets a stricter read (below)."""
-        from utils.own_radio import (is_this_box_radio, note_own_node,
+        from utils.own_radio import (interface_is_this_box_radio, note_own_node,
                                      num_from_interface, _valid)
         num, attr = num_from_interface(interface)
         if num is not None:
             # BIC-2: the DM judge's own-radio id -- ONLY this session's
             # handshake value (Fable r5 F1: the library's reconnect keeps an
             # OLD localNode.nodeNum) and ONLY for the radio inbox sends
-            # through (localhost + primary port; Fable r6 #1, r4 F3).
+            # through -- decided on the INTERFACE's own wire facts, never the
+            # collector's settings (slice-2 r6 F1: a serial drain / a sticky
+            # singleton handed it another radio; r4 F3, Fable r6 #1).
             # Measured 11-28: this drain runs EVERY cycle on a meshtasticd box
             # (no /json/*, Issue #76) -- except where the gateway owns :4403;
             # there no reading exists (operator 11-28: header-only rule).
-            host = getattr(self, "get_meshtasticd_host", lambda: "")()
-            port = getattr(self, "get_meshtasticd_port", lambda: None)()
-            if is_this_box_radio(host, port):
+            if interface_is_this_box_radio(interface):
                 note_own_node(num, source=f"map collector connection ({attr})")
         else:
             # map tagging only: the localNode fallback stays (a stale id there

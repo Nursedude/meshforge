@@ -1287,4 +1287,6 @@ def _pin_own_node_config(monkeypatch):
         return
     monkeypatch.setattr(own_radio, "_read_config",
                         lambda: {"state": "unset", "num": None, "why": ""})
+    own_radio._reset()      # slice-2 r6 F6: no reading leaks between tests
     yield
+    own_radio._reset()

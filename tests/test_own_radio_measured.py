@@ -74,20 +74,54 @@ class TestThisBoxRadio:
         return type("X", (M,), {"get_meshtasticd_host": lambda s: "localhost",
                                 "get_meshtasticd_port": lambda s: port})()
 
+    @staticmethod
+    def _tcp(host="localhost", port=4403, num=ID_A, **kw):
+        return SimpleNamespace(myInfo=SimpleNamespace(my_node_num=num),
+                               hostname=host, portNumber=port, **kw)
+
     def test_r4_f3_map_drain_alt_port_never_notes(self):
-        self._collector(4404)._own_node_id(
-            SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ID_A)))
+        self._collector(4403)._own_node_id(self._tcp(port=4404))
         assert orad.own_node_status()["readings"] == []
 
     def test_map_drain_primary_port_notes(self):
-        self._collector(4403)._own_node_id(
-            SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ID_A)))
+        self._collector(4403)._own_node_id(self._tcp())
         assert orad.own_node() == ID_A
 
     def test_r5_f1_map_drain_reconnect_shape_never_notes(self):
-        self._collector(4403)._own_node_id(
-            SimpleNamespace(myInfo=None, localNode=SimpleNamespace(nodeNum=ID_A)))
+        self._collector(4403)._own_node_id(SimpleNamespace(
+            myInfo=None, localNode=SimpleNamespace(nodeNum=ID_A),
+            hostname="localhost", portNumber=4403))
         assert orad.own_node_status()["readings"] == []
+
+    # slice-2 r6 F1: the settings said localhost:4403, the interface was not
+    def test_r6_f1_serial_drain_never_notes(self):
+        serial = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ID_A),
+                                 devPath="/dev/ttyACM0")
+        assert self._collector(4403)._own_node_id(serial) == f"!{ID_A:08x}"   # tagging ok
+        assert orad.own_node_status()["readings"] == []
+
+    def test_r6_f1_serial_with_tcp_lookalike_attrs_never_notes(self):
+        self._collector(4403)._own_node_id(self._tcp(devPath="/dev/ttyUSB0"))
+        assert orad.own_node_status()["readings"] == []
+
+    def test_r6_f1_foreign_host_behind_local_settings_never_notes(self):
+        self._collector(4403)._own_node_id(self._tcp(host="remote-box.example"))
+        assert orad.own_node_status()["readings"] == []
+
+    def test_r6_f1_interface_without_wire_facts_never_notes(self):
+        self._collector(4403)._own_node_id(
+            SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ID_A)))
+        assert orad.own_node_status()["readings"] == []
+
+    def test_r6_f1_real_library_classes_if_installed(self):
+        tcp = pytest.importorskip("meshtastic.tcp_interface")
+        ser = pytest.importorskip("meshtastic.serial_interface")
+        t = tcp.TCPInterface.__new__(tcp.TCPInterface)
+        t.hostname, t.portNumber = "localhost", 4403
+        assert orad.interface_is_this_box_radio(t)
+        s_ = ser.SerialInterface.__new__(ser.SerialInterface)
+        s_.devPath = "/dev/ttyACM0"
+        assert not orad.interface_is_this_box_radio(s_)
 
 
 class TestFutureReading:
@@ -107,6 +141,38 @@ class TestFutureReading:
     def test_slack_inside_60s_is_a_reading(self):
         orad.note_own_node(ID_A, source="c", now=NOW + 30)
         assert orad.own_node_status(now=NOW)["num"] == ID_A
+
+
+class TestReviewR6:
+    def test_f2_backward_wall_step_cannot_freshen_a_real_read(self, monkeypatch):
+        """A real read (now=None) carries a monotonic anchor; after a 4.5 h
+        backward wall step its true 5 h age still refuses."""
+        import time as _t
+        mono0, wall0 = 1000.0, NOW
+        monkeypatch.setattr(_t, "monotonic", lambda: mono0)
+        monkeypatch.setattr(_t, "time", lambda: wall0)
+        orad.note_own_node(ID_A, source="c")
+        monkeypatch.setattr(_t, "monotonic", lambda: mono0 + 5 * 3600)
+        monkeypatch.setattr(_t, "time", lambda: wall0 + 30 * 60)   # 5 h - 4.5 h step
+        assert orad.fresh_own_node() is None
+        monkeypatch.setattr(_t, "monotonic", lambda: mono0 + 60)
+        monkeypatch.setattr(_t, "time", lambda: wall0 + 60)
+        assert orad.fresh_own_node() == ID_A                          # control
+
+    @pytest.mark.parametrize("pid", [{}, [], set(), True, None, 1.5])
+    def test_f5_hostile_packet_ids_never_raise(self, monkeypatch, pid):
+        _cfg(monkeypatch, ID_A)
+        orad.observe_own_headers([(pid, ID_B)], now=NOW)
+        assert orad.resolve_own(NOW)["trust"] != orad.TRUST_CONTRADICTED
+
+    def test_f3_ensure_section_keeps_a_shared_files_mode(self, tmp_path):
+        from utils.global_config import ensure_own_node_id_section
+        p = tmp_path / "global.ini"
+        p.write_text("[mqtt]\nbroker = x\n")
+        p.chmod(0o644)
+        ensure_own_node_id_section(p)
+        assert (p.stat().st_mode & 0o777) == 0o644
+        assert "[meshtastic]" in p.read_text()
 
 
 class TestNoCrossProcessReading:

@@ -189,7 +189,7 @@ def ensure_own_node_id_section(path: Optional[Path] = None) -> Path:
     the file if absent). A symlink is written THROUGH (r1 #7). An undecodable
     or malformed file is refused UNTOUCHED as ``OSError`` (r1 #6) — the caller
     says it. A root-created file goes back to the operator (sudo TUI)."""
-    from utils.paths import atomic_write_text, chown_to_operator
+    from utils.paths import atomic_write_text_preserving
     p = global_config_path() if path is None else Path(path)
     target = p.resolve() if p.is_symlink() else p
     try:
@@ -210,8 +210,10 @@ def ensure_own_node_id_section(path: Optional[Path] = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     body = OWN_NODE_ID_TEMPLATE if not existing else (
         existing.rstrip("\n") + "\n\n" + OWN_NODE_ID_TEMPLATE)
-    atomic_write_text(target, body)
-    chown_to_operator(target)
+    # slice-2 r6 F3: global.ini is SHARED with sister apps -- keep its owner
+    # and mode (a 0600 temp file narrowed a 0644 file); a new file goes to
+    # the operator (sudo TUI)
+    atomic_write_text_preserving(target, body)
     return p
 
 

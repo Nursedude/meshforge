@@ -96,7 +96,8 @@ class TestOwnRadioRegistry:
 
     def test_the_map_collector_notes_the_id_it_reads_from_the_connection(self):
         from utils._map_collector_meshtastic import MeshtasticDataCollectorMixin
-        iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ME), localNode=None)
+        iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ME), localNode=None,
+                                hostname="localhost", portNumber=4403)   # r6 F1: wire facts
         collector = MeshtasticDataCollectorMixin.__new__(MeshtasticDataCollectorMixin)
         collector.get_meshtasticd_host = lambda: "localhost"   # r6 #1: the send host only
         collector.get_meshtasticd_port = lambda: 4403          # r4 F3: the primary port

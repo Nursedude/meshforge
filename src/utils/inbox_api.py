@@ -570,7 +570,7 @@ def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
     own = own or {}
     num = own.get("num")
     # r4 #1: what rules out a DM to this box's own radio, said; slice 2: the
-    # source ("from config" / "from a connection") and any refusal/mismatch
+    # source (a connection read, config named beside it) and any refusal
     line += (f" · own radio id: !{num:08x} (from {own.get('source') or 'a connection'})"
              if num is not None else
              " · own radio id: unknown (a DM to it is ruled out only by its uplinked header)")

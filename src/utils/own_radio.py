@@ -5,8 +5,8 @@ BIC-2 DM slice 1, Fable r4 #1 (operator 2026-11-26, "Both: send-time +
 hardened"): a DM to our own radio must never read "delivered". The ack
 witness's copy of the DM's own uplinked header (``tx_from``) can be lost,
 overwritten or late, so the judge also takes this id when a connection
-already in this process has read it (``myInfo.my_node_num`` /
-``localNode.nodeNum``). Nothing here opens a connection: the TX path must
+already in this process has read it (``myInfo.my_node_num`` only -- r5 F1).
+Nothing here opens a connection: the TX path must
 never read ``/api/v1/fromradio`` (it steals acks), and a broker that
 bridges the public server carries other boxes' traffic (memory:
 own identity is never inferred from traffic).
@@ -33,7 +33,11 @@ _MAX = 0xFFFFFFFF
 #: only for an ESP32 webserver). Where the gateway owns :4403 the map defers
 #: (#17) and this registry stays empty: header-only rule there (operator
 #: 11-28, after a cross-process file failed Fable r4+r5). Config (slice 2,
-#: ``resolve_own``) is a cross-check, never the authority. Residual (r6 W2):
+#: ``resolve_own``) is a cross-check, never the authority. Residuals: (r6 W2)
+#: a radio swapped inside this window with no header seen can be stamped with
+#: the old id; (slice-2 r6 F4) the library's ~1 s ``_reconnect()`` window,
+#: where a drain could see the previous session's myInfo -- the collector
+#: opens a fresh interface per cycle, so that session is seconds old.
 OWN_FRESH_S = 3600
 
 
@@ -48,8 +52,12 @@ def note_own_node(num: Any, *, source: str, now: Optional[float] = None) -> None
     if not _valid(num):
         return
     with _LOCK:
+        # slice-2 r6 F2: a monotonic anchor beside the wall stamp -- a
+        # backward wall-clock step (RTC-less Pi, NTP) cannot make an old
+        # reading fresh (hfm #6). Only a REAL read carries one (now=None).
         _OWN = {"num": int(num), "source": str(source)[:80],
-                "ts": time.time() if now is None else now}
+                "ts": time.time() if now is None else now,
+                "mono": time.monotonic() if now is None else None}
 
 
 #: The radio inbox sends through: localhost meshtasticd on its PRIMARY port
@@ -66,6 +74,22 @@ def is_this_box_radio(host: Any, port: Any) -> bool:
     try:
         return str(host) in _LOCAL_HOSTS and int(port) == PRIMARY_PORT
     except (TypeError, ValueError):
+        return False
+
+
+def interface_is_this_box_radio(interface: Any) -> bool:
+    """The WIRE fact, from the interface itself (slice-2 r6 F1: the
+    collector's host/port SETTINGS were asserted while a serial drain or a
+    sticky connection-manager singleton handed it another radio). True only
+    for a TCP stream interface to localhost on the primary port: a
+    ``TCPInterface`` carries ``hostname`` + ``portNumber`` (meshtastic 2.7.11);
+    a ``SerialInterface`` carries ``devPath`` and is refused. Never raises."""
+    try:
+        if getattr(interface, "devPath", None) is not None:
+            return False
+        return is_this_box_radio(getattr(interface, "hostname", None),
+                                 getattr(interface, "portNumber", None))
+    except Exception:
         return False
 
 
@@ -113,11 +137,16 @@ def own_node() -> Optional[int]:
 
 
 def fresh_own_node(now: Optional[float] = None) -> Optional[int]:
-    """The id only if read within ``OWN_FRESH_S`` (and not in the future) --
+    """The id only if read within ``OWN_FRESH_S`` (and not in the future) by
+    BOTH the wall clock and, for a real read, the monotonic clock (r6 F2) --
     what a send stamps on its row."""
     t = time.time() if now is None else now
     st = own_node_status(t)
     if st["num"] is None or not (0 <= t - st["ts"] <= OWN_FRESH_S):
+        return None
+    with _LOCK:
+        mono = _OWN.get("mono") if _OWN is not None else None
+    if mono is not None and not (0 <= time.monotonic() - mono <= OWN_FRESH_S):
         return None
     return st["num"]
 
@@ -165,9 +194,11 @@ def observe_own_headers(items: Any, *, now: Optional[float] = None) -> None:
     configured id. Config read ONCE per batch; garbage items are no evidence;
     no configured id = nothing to judge. Never raises."""
     try:
+        # slice-2 r6 F5: an unhashable packet id is no evidence, never a raise
         pairs = [(pid, num) for pid, num in (x for x in (items or ())
                                              if isinstance(x, tuple) and len(x) == 2)
-                 if pid is not None and _valid(num)]
+                 if isinstance(pid, (int, str)) and not isinstance(pid, bool)
+                 and _valid(num)]
     except Exception:
         return
     if not pairs:
