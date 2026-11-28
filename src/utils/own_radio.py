@@ -27,11 +27,13 @@ _OWN: Optional[Dict[str, Any]] = None
 _MAX = 0xFFFFFFFF
 #: A send stamps the id only if a connection re-read it this recently (r5 #1:
 #: "last good id stands" for a process lifetime would outlive a radio swap).
-#: The only writer today is the map collector's TCP-interface drain, which
-#: runs only when its HTTP collect yields nothing (Fable r6 #2) -- so on a
-#: healthy box this registry is usually EMPTY and rows fall back to the DM's
-#: header. A config-supplied id (slice 2, ``resolve_own``) now stands
-#: beside it. Residual (r6 W2):
+#: Writers: the map collector's TCP drain -- MEASURED 11-28 to run EVERY
+#: cycle on a meshtasticd box (it serves no /json/*, Issue #76, so the HTTP
+#: collect always yields nothing; Fable r6 #2's "usually empty" holds only for
+#: an ESP32 webserver) -- and, where the gateway owns :4403 and the map defers
+#: (#17; moc), the gateway's own connection via ``publish_own_node``. Newest
+#: reading wins. Config (slice 2, ``resolve_own``) is a cross-check, never the
+#: authority. Residual (r6 W2):
 #: a radio swapped inside this window, with no header seen, can be stamped
 #: with the old id.
 OWN_FRESH_S = 3600
@@ -52,27 +54,108 @@ def note_own_node(num: Any, *, source: str, now: Optional[float] = None) -> None
                 "ts": time.time() if now is None else now}
 
 
-def own_node() -> Optional[int]:
+#: The gateway's own-id reading, for a box whose gateway owns :4403 and the
+#: map therefore never reads it (#17 defer; measured 11-28: moc). The
+#: gateway's EXISTING connection is the measurement -- one writer (the
+#: gateway), one reader (this registry). Rewritten every PEER_PUBLISH_S while
+#: connected, so a stopped gateway's reading ages out under OWN_FRESH_S.
+PEER_FILE_NAME = "own_radio_gateway.json"
+PEER_PUBLISH_S = 300.0
+
+
+def peer_path():
+    """Seam (tests pin it: conftest -- never this box's real file)."""
+    from utils.paths import MeshForgePaths
+    return MeshForgePaths.get_data_dir() / PEER_FILE_NAME
+
+
+def num_from_interface(interface: Any):
+    """``(num, attr)`` -- an interface's own id from its EXISTING connection
+    (``myInfo.my_node_num``, else ``localNode.nodeNum``), or ``(None, "")``.
+    The ONE reader for the map drain and the gateway (hfm #5). Never raises."""
+    for oname, attr in (("myInfo", "my_node_num"), ("localNode", "nodeNum")):
+        try:
+            obj = getattr(interface, oname, None)
+            num = getattr(obj, attr, None) if obj is not None else None
+        except Exception:
+            continue
+        if _valid(num):
+            return int(num), attr
+    return None, ""
+
+
+def publish_own_node(num: Any, *, source: str, now: Optional[float] = None) -> bool:
+    """Gateway side: write the id its connection read. Never raises; False
+    when nothing was written (not a node / write fault)."""
+    if not _valid(num):
+        return False
+    try:
+        import json
+        import os
+        from utils import paths
+        doc = {"num": int(num), "source": str(source)[:80],
+               "ts": time.time() if now is None else float(now), "pid": os.getpid()}
+        paths.atomic_write_text(peer_path(), json.dumps(doc))
+        return True
+    except Exception:
+        return False
+
+
+def _read_peer(now: float) -> Dict[str, Any]:
+    """``{"num", "source", "ts"}`` | ``{"error": why}`` | ``{}`` (no file)."""
+    import json
+    try:
+        p = peer_path()
+        if not p.exists():
+            return {}
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return {"error": f"gateway own-id file unreadable ({type(e).__name__})"}
+    ts = doc.get("ts") if isinstance(doc, dict) else None
+    if not (isinstance(doc, dict) and _valid(doc.get("num"))
+            and isinstance(ts, (int, float)) and not isinstance(ts, bool)):
+        return {"error": "gateway own-id file unreadable (not a reading)"}
+    if ts > now + 60:                     # hfm #6: a future stamp is no reading
+        return {"error": "gateway own-id file stamped in the future; ignored"}
+    return {"num": int(doc["num"]), "source": str(doc.get("source") or "gateway connection")[:80],
+            "ts": float(ts)}
+
+
+def own_node_status(now: Optional[float] = None) -> Dict[str, Any]:
+    """The NEWEST valid connection reading -- this process's (the map drain)
+    or the gateway's file. ``{"num", "source", "ts", "note", "peer_error"}``;
+    ``num`` None when unknown. A disagreement the newer reading superseded is
+    said in ``note``; an unreadable file in ``peer_error``."""
+    t = time.time() if now is None else now
     with _LOCK:
-        return None if _OWN is None else _OWN["num"]
+        mine = dict(_OWN) if _OWN is not None else None
+    peer = _read_peer(t)
+    out = {"num": None, "source": "", "ts": None, "note": "",
+           "peer_error": peer.get("error", "")}
+    cands = [r for r in (mine, peer if "num" in peer else None) if r]
+    if not cands:
+        return out
+    best = max(cands, key=lambda r: r["ts"])
+    out.update(num=best["num"], source=best["source"], ts=best["ts"])
+    other = [r for r in cands if r is not best and r["num"] != best["num"]]
+    if other:
+        out["note"] = (f"an older reading !{other[0]['num']:08x} ({other[0]['source']}) "
+                       f"was superseded by !{best['num']:08x}")
+    return out
+
+
+def own_node() -> Optional[int]:
+    return own_node_status()["num"]
 
 
 def fresh_own_node(now: Optional[float] = None) -> Optional[int]:
-    """The id only if noted within ``OWN_FRESH_S`` (and not in the future) --
+    """The id only if read within ``OWN_FRESH_S`` (and not in the future) --
     what a send stamps on its row."""
     t = time.time() if now is None else now
-    with _LOCK:
-        if _OWN is None or not (0 <= t - _OWN["ts"] <= OWN_FRESH_S):
-            return None
-        return _OWN["num"]
-
-
-def own_node_status() -> Dict[str, Any]:
-    """``{"num", "source", "ts"}`` or ``{"num": None, ...}`` when unknown."""
-    with _LOCK:
-        if _OWN is None:
-            return {"num": None, "source": "", "ts": None}
-        return dict(_OWN)
+    st = own_node_status(t)
+    if st["num"] is None or not (0 <= t - st["ts"] <= OWN_FRESH_S):
+        return None
+    return st["num"]
 
 
 def _read_config() -> Dict[str, Any]:
@@ -179,11 +262,13 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str,
     out["config"] = state
     if state in ("invalid", "unreadable"):
         out["note"] = f"configured own_node_id refused: {cfg.get('why') or state}"
-    st = own_node_status()
+    st = own_node_status(t)
+    if st.get("peer_error"):
+        out["note"] = "; ".join(x for x in (out["note"], st["peer_error"]) if x)
     conn_any = st.get("num") if _valid(st.get("num")) else None
     csrc = st.get("source") or "a connection"
     if cnum is None:
-        conn = fresh_own_node(now) if fresh else conn_any
+        conn = fresh_own_node(t) if fresh else conn_any
         if conn is not None:
             out.update(num=conn, source=csrc)
         return out
@@ -210,7 +295,7 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str,
     else:
         out.update(self_only=cnum, trust=TRUST_ASSERTED, info=(
             f"configured !{cnum:08x} marks a DM to it as self only — config alone never "
-            "rules a self-DM out (this box does not yet measure its own radio id)"))
+            "rules a self-DM out (no radio connection here has read its own id)"))
     return out
 
 

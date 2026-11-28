@@ -37,8 +37,8 @@ def own_id_summary(own) -> str:
         so = own.get("self_only")
         if isinstance(so, int) and not isinstance(so, bool):
             lines.append(f"Configured: !{so:08x}. It only marks a DM to that id as 'to myself'")
-            lines.append("(never delivered). Config alone never rules a self-DM out: this box")
-            lines.append("does not yet MEASURE its own radio id (planned).")
+            lines.append("(never delivered). Config alone never rules a self-DM out; the map")
+            lines.append("measures the id from its radio connection (or the gateway's).")
         lines.append("A DM to this box's own radio is then ruled out only by the DM's own")
         lines.append("uplinked header; without it a real delivery can stay 'unconfirmed'.")
     if own.get("note"):

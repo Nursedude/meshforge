@@ -253,20 +253,20 @@ class MeshtasticDataCollectorMixin:
         """This radio's own node id from the EXISTING connection
         (``myInfo.my_node_num``, else ``localNode.nodeNum``), or None.
         Never inferred from traffic (MAP-H H14 r3 F6)."""
-        for obj, attr in ((getattr(interface, 'myInfo', None), 'my_node_num'),
-                          (getattr(interface, 'localNode', None), 'nodeNum')):
-            num = getattr(obj, attr, None) if obj is not None else None
-            if isinstance(num, int) and not isinstance(num, bool) and num > 0:
-                # BIC-2 r4 #1: the DM judge's own-radio id, from THIS
-                # connection -- only when it is the radio inbox sends through
-                # (localhost; Fable r6 #1: a remote meshtasticd_host is
-                # another box's radio, never this box's own)
-                host = getattr(self, "get_meshtasticd_host", lambda: "")()
-                if host in ("localhost", "127.0.0.1", "::1"):
-                    from utils.own_radio import note_own_node
-                    note_own_node(num, source=f"map collector connection ({attr})")
-                return self._canonical_meshtastic_id("", num)
-        return None
+        from utils.own_radio import note_own_node, num_from_interface
+        num, attr = num_from_interface(interface)
+        if num is None:
+            return None
+        # BIC-2 r4 #1: the DM judge's own-radio id, from THIS connection --
+        # only when it is the radio inbox sends through (localhost; Fable r6
+        # #1: a remote meshtasticd_host is another box's radio, never ours).
+        # Measured 11-28: this drain runs EVERY cycle on a meshtasticd box (no
+        # /json/*, Issue #76) -- except where the gateway owns :4403, which
+        # then publishes the id itself (gateway.meshtastic_handler).
+        host = getattr(self, "get_meshtasticd_host", lambda: "")()
+        if host in ("localhost", "127.0.0.1", "::1"):
+            note_own_node(num, source=f"map collector connection ({attr})")
+        return self._canonical_meshtastic_id("", num)
 
     @staticmethod
     def _stamp_radio_heard(props, self_id):

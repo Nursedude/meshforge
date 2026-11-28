@@ -892,12 +892,35 @@ class MeshtasticHandler(BaseMessageHandler):
                 # Also check if we can access basic properties (catches broken pipes)
                 if hasattr(self._interface, 'nodes'):
                     _ = len(self._interface.nodes)
+                self._publish_own_id()
             except (BrokenPipeError, ConnectionResetError, OSError) as e:
                 logger.warning(f"Meshtastic connection lost: {e}")
                 self._handle_connection_lost()
                 return
             except Exception as e:
                 logger.debug(f"Meshtastic health check error: {e}")
+
+    def _publish_own_id(self, *, mono=None, now=None) -> None:
+        """BIC-2 slice 2 "measure the id": this gateway owns :4403, so the
+        map defers (#17) and never reads the radio's own id -- publish what
+        THIS connection read (no radio I/O: the attribute the interface
+        already holds), every ``PEER_PUBLISH_S``. Localhost only (a remote
+        meshtasticd is another box's radio). Never raises."""
+        try:
+            from utils import own_radio
+            m = time.monotonic() if mono is None else mono
+            last = getattr(self, "_own_pub_mono", None)
+            if last is not None and 0 <= m - last < own_radio.PEER_PUBLISH_S:
+                return
+            if self.config.meshtastic.host not in ("localhost", "127.0.0.1", "::1"):
+                return
+            num, attr = own_radio.num_from_interface(self._interface)
+            if num is None:
+                return
+            if own_radio.publish_own_node(num, source=f"gateway connection ({attr})", now=now):
+                self._own_pub_mono = m
+        except Exception as e:
+            logger.debug(f"own-id publish skipped: {e}")
 
     def _handle_connection_lost(self) -> None:
         """Handle lost meshtastic connection - cleanup and prepare for reconnect."""
