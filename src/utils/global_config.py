@@ -23,6 +23,7 @@ boot if global.ini got corrupted).
 """
 
 import configparser
+import re
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -42,6 +43,64 @@ def global_config_path() -> Path:
     redirect to ``/root``.
     """
     return get_real_user_home() / ".config" / GLOBAL_CONFIG_DIRNAME / GLOBAL_CONFIG_FILENAME
+
+
+#: ``[meshtastic] own_node_id`` (BIC-2 DM slice 2, operator 2026-11-27: lives
+#: here, the per-box identity layer). STRICT at the authoring boundary (hfm
+#: #3): exactly ``!`` + 8 hex digits, any case. The DM seam reads shorter
+#: spellings off the wire (``dm_delivery.NODE_ID_RE``); a human writing config
+#: copies the full id the radio prints, so a short one is a typo, not a node.
+OWN_NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{8}$")
+OWN_NODE_ID_KEY = "own_node_id"
+#: Keys a human plausibly meant for ``own_node_id`` — refused LOUDLY, never
+#: read as "unset" (a typo must not silently leave the id unknown).
+_OWN_NODE_ID_LOOKALIKES = ("node_id", "own_id", "own_node", "ownnodeid",
+                           "my_node_id", "my_node_num", "own_node_num")
+
+
+def read_own_node_id(path: Optional[Path] = None) -> Dict[str, Any]:
+    """This box's Meshtastic node id as the OPERATOR configured it.
+
+    Tri-state plus refusal, never raises:
+      ``{"state": "unset", "num": None, "why": ""}``      nothing configured
+      ``{"state": "ok", "num": <int>, "why": "", "raw": "!xxxxxxxx"}``
+      ``{"state": "invalid", "num": None, "why": ...}``   present, refused
+      ``{"state": "unreadable", "num": None, "why": ...}`` file unreadable
+    Unset is today's behaviour (the id is unknown). An invalid value is never
+    absorbed into unset: the witness line says it was refused, and why.
+    """
+    p = global_config_path() if path is None else Path(path)
+    unset = {"state": "unset", "num": None, "why": ""}
+    try:
+        if not p.exists():
+            return unset
+        parser = configparser.ConfigParser(interpolation=None)
+        with open(p, encoding="utf-8") as fh:
+            parser.read_file(fh)
+    except (OSError, UnicodeDecodeError, configparser.Error) as e:
+        return {"state": "unreadable", "num": None,
+                "why": f"{p.name} unreadable: {type(e).__name__}"}
+    if not parser.has_section("meshtastic"):
+        return unset
+    raw = parser.get("meshtastic", OWN_NODE_ID_KEY, fallback=None)
+    if raw is None:
+        near = [k for k in parser.options("meshtastic")
+                if k.replace("-", "_") in _OWN_NODE_ID_LOOKALIKES]
+        if near:
+            return {"state": "invalid", "num": None,
+                    "why": f"[meshtastic] has {near[0]!r}, not {OWN_NODE_ID_KEY!r}"}
+        return unset
+    v = raw.strip()
+    if v == "":
+        return unset
+    if not OWN_NODE_ID_RE.fullmatch(v):
+        return {"state": "invalid", "num": None,
+                "why": f"{OWN_NODE_ID_KEY} {v[:24]!r} is not !xxxxxxxx (8 hex digits)"}
+    num = int(v[1:], 16)
+    if num in (0, 0xFFFFFFFF):
+        return {"state": "invalid", "num": None,
+                "why": f"{OWN_NODE_ID_KEY} {v} is never a node (zero / broadcast)"}
+    return {"state": "ok", "num": num, "why": "", "raw": f"!{num:08x}"}
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -73,6 +132,39 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     if s == "":
         return None
     return s in ("true", "yes", "1", "on")
+
+
+#: What the TUI adds when the operator opens the radio-id editor and the file
+#: carries no ``[meshtastic]`` section yet (empty value = unset = today).
+OWN_NODE_ID_TEMPLATE = (
+    "[meshtastic]\n"
+    "# This box's OWN radio id, exactly as the radio prints it: ! + 8 hex digits\n"
+    "# (TUI: Radio -> node info, or `meshtastic --info` 'myNodeNum' in hex).\n"
+    "# Used only to judge DM delivery (a DM to this radio is never 'delivered').\n"
+    "# Leave empty if unsure: empty = unknown, never a guess.\n"
+    f"{OWN_NODE_ID_KEY} =\n"
+)
+
+
+def ensure_own_node_id_section(path: Optional[Path] = None) -> Path:
+    """Make sure global.ini has a ``[meshtastic]`` section to edit; returns the
+    path. Never touches an existing section; appends the template otherwise
+    (creating the file if absent). Hands a root-created file back to the
+    operator (sudo TUI). Raises OSError on a write failure -- the caller says it."""
+    from utils.paths import atomic_write_text, chown_to_operator
+    p = global_config_path() if path is None else Path(path)
+    try:
+        existing = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and re.search(r"(?m)^\s*\[meshtastic\]\s*$", existing):
+        return p
+    p.parent.mkdir(parents=True, exist_ok=True)
+    body = OWN_NODE_ID_TEMPLATE if not existing else (
+        existing.rstrip("\n") + "\n\n" + OWN_NODE_ID_TEMPLATE)
+    atomic_write_text(p, body)
+    chown_to_operator(p)
+    return p
 
 
 def load_global_overrides(path: Optional[Path] = None) -> Dict[str, Any]:

@@ -168,7 +168,7 @@ product, `--days 7` logged in each handoff (a measure, not a gate; operator 11-1
   status: planned
 - **REL-1** [MF] S — a release every month: tag + a changelog a ham can read; each runs the gate-5 virtual drill (brief 42fbS7, 10-27)
   v0.8.0-beta = first GitHub Release (rule 3). 11-26: none in Nov (`86c7f05d`, `083b3deb` fix every X ≤11-19); earliest ≈ knob-arc deploy + 7 d. Gate-5 drill to END (README only, a message crosses mesh↔RNS).
-- **MAP-H** [MF] S+F — map never draws healthy when blind; H16+H12 done 11-20; H4a r6 seam deployed 11-21 (`e8c82d8d`); next H4, CoreScope. `plans/maps_audit_2026_11_06.md`
+- **MAP-H** [MF] S+F — map never draws healthy when blind; H16+H12 done 11-20; H4a r6 seam deployed 11-21 (`e8c82d8d`); H4 measured 11-27; next H5, CoreScope. `plans/maps_audit_2026_11_06.md`
   After H12 (red-first) → NEXT with H4 first (operator 11-14).
 - **EVAL-PF** [MF][MA] F — planted-fault benchmark per model, END-graded: the evidence for the harness's second purpose (README "How it's built")
   Grilled 11-13 (30 Q): `plans/eval_pf_grilling_2026_11_13.md`; cases + keys OFF-repo. Grades a fresh session, harness ON vs OFF; +1/0/−1. ACCEPT slice 1: one model, both arms, n=3, case 1 + null = 12 scored rows; every plant pre-checked + restore verified; wrapper log only allowlisted; refusal test in CI; a hand-fed wrong answer scores −1. Order Q29; Fable review by running before the first score. ⚠️ RNS AI-dataset clause.

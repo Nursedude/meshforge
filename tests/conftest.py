@@ -1271,3 +1271,20 @@ def _pin_rns_client_measurement():
             raise RuntimeError("rns client measurement pin patched NOTHING — "
                                "tests would probe this host's live processes")
         yield
+
+
+@pytest.fixture(autouse=True)
+def _pin_own_node_config(monkeypatch):
+    """No test reads THIS box's ``[meshtastic] own_node_id`` (BIC-2 DM slice
+    2, 2026-11-27). Every inbox send stamp and witness line now weighs the
+    configured id; unpinned, a box whose operator set it would flip verdicts
+    machine by machine. Default = unset (today's behaviour);
+    tests/test_own_node_config.py replaces ``_read_config`` to drive states."""
+    try:
+        from utils import own_radio
+    except ImportError:
+        yield
+        return
+    monkeypatch.setattr(own_radio, "_read_config",
+                        lambda: {"state": "unset", "num": None, "why": ""})
+    yield

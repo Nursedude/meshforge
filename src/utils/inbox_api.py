@@ -510,7 +510,7 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
             logger.warning("inbox: DM verdicts not kept: %s", e)
             errors.append(f"DM verdicts not kept: {type(e).__name__}: {e}")
     late_acks = sum(1 for _, m in sends if (m.get("delivery") or {}).get("late"))
-    return _witness_line(snap, now, late_acks, own_radio.own_node_status()), \
+    return _witness_line(snap, now, late_acks, own_radio.resolve_own(now, fresh=False)), \
         ("; ".join(errors) or None)
 
 
@@ -563,14 +563,19 @@ def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
     if _REFUTED:
         line += (f" · {len(_REFUTED)} kept verdict(s) refuted by the origin and dropped "
                  "since the map started (see the map log)")
-    num = (own or {}).get("num")
-    # r4 #1: what rules out a DM to this box's own radio, said
+    own = own or {}
+    num = own.get("num")
+    # r4 #1: what rules out a DM to this box's own radio, said; slice 2: the
+    # source ("from config" / "from a connection") and any refusal/mismatch
     line += (f" · own radio id: !{num:08x} (from {own.get('source') or 'a connection'})"
              if num is not None else
              " · own radio id: unknown (a DM to it is ruled out only by its uplinked header)")
+    if own.get("note"):
+        line += f" · ⚠ {own['note']}"
     return {"acks_visible": w.since is not None, "since": w.since, "why": w.why,
             "channels": visible, "unreadable": unreadable, "counts": snap["counts"],
             "late_acks": late_acks, "own_id": None if num is None else f"!{num:08x}",
+            "own_id_source": own.get("source") or None, "own_id_note": own.get("note") or None,
             "refuted_kept": len(_REFUTED),
             "line": line}
 
@@ -802,13 +807,14 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     # (INBOX-T F3) — the same validator the store applies
     packet_id = messaging.valid_packet_id(packet_id)
     handed_off = packet_id is not None
-    # BIC-2 DM r5 #1: this box's own radio id AT SEND, only if a connection
-    # re-read it recently -- never inferred, never a new radio session
-    from utils.own_radio import fresh_own_node
+    # BIC-2 DM r5 #1 + slice 2: this box's own radio id AT SEND -- the
+    # configured id beside one a connection re-read recently; never inferred,
+    # never a new radio session; the two disagreeing -> none (header alone)
+    from utils.own_radio import resolve_own
     rec = messaging.store_outgoing(
         content=params["text"], network="meshtastic", to_id=params["to_id"],
         channel=params["channel"], delivered=handed_off, packet_id=packet_id,
-        own_id=fresh_own_node() if params["to_id"] is not None else None)
+        own_id=resolve_own()["num"] if params["to_id"] is not None else None)
     body = {
         "state": "handed_off" if handed_off else "not_sent",
         "detail": ("Handed to the radio. Delivery is unconfirmed." if handed_off

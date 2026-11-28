@@ -1839,6 +1839,16 @@
   "class": "other",
   "count": 1
  },
+ "src/utils/global_config.py::ensure_own_node_id_section::read_text": {
+  "audited": "2026-11-27 BIC-2 DM slice 2: reads ~/.config/meshforge/global.ini ([meshtastic] own_node_id), never the RNS config",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/global_config.py::read_own_node_id::open": {
+  "audited": "2026-11-27 BIC-2 DM slice 2: reads ~/.config/meshforge/global.ini ([meshtastic] own_node_id), never the RNS config",
+  "class": "other",
+  "count": 1
+ },
  "src/utils/gps_integration.py::GPSManager._load_cached::read_text": {
   "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
   "class": "other",

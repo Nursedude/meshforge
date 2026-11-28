@@ -23,6 +23,29 @@ def _messaging():
         return None
 
 
+def own_id_summary(own) -> str:
+    """The Own Radio ID screen, from ``own_radio.resolve_own`` (pure). Says
+    the id AND where it came from, or that it is unknown and what that costs;
+    a refused or contradicted config value is always said (hfm #3)."""
+    own = own if isinstance(own, dict) else {}
+    num = own.get("num")
+    lines = []
+    if isinstance(num, int) and not isinstance(num, bool):
+        lines.append(f"This box's radio id: !{num:08x}  (from {own.get('source') or 'a connection'})")
+    else:
+        lines.append("This box's radio id: UNKNOWN")
+        lines.append("A DM to this box's own radio is then ruled out only by the DM's own")
+        lines.append("uplinked header; without it a real delivery can stay 'unconfirmed'.")
+    if own.get("note"):
+        lines.append("")
+        lines.append(f"WARNING: {own['note']}")
+    if own.get("config") == "unset":
+        lines.append("")
+        lines.append("Not configured. Set [meshtastic] own_node_id = !xxxxxxxx (8 hex digits,")
+        lines.append("as your radio prints it). Empty = unknown, never a guess.")
+    return "\n".join(lines)
+
+
 class MessagingHandler(BaseHandler):
     """TUI handler for messaging operations."""
 
@@ -46,6 +69,7 @@ class MessagingHandler(BaseHandler):
                 ("messages", "View Messages       Recent message history"),
                 ("convos", "Conversations       Message threads by node"),
                 ("dmdeliv", "DM Delivery         Did my DMs arrive?"),
+                ("ownid", "Own Radio ID        Set it for DM delivery checks"),
                 ("stats", "Statistics          Message counts & rates"),
                 ("rx", "RX Control          Start/stop listener"),
                 ("diagnose", "Diagnose            Check messaging health"),
@@ -69,6 +93,7 @@ class MessagingHandler(BaseHandler):
                 "messages": ("View Messages", self._messaging_view),
                 "convos": ("Conversations", self._messaging_conversations),
                 "dmdeliv": ("DM Delivery", self._messaging_dm_delivery),
+                "ownid": ("Own Radio ID", self._messaging_own_id),
                 "stats": ("Statistics", self._messaging_stats),
                 "rx": ("RX Control", self._messaging_rx_control),
                 "diagnose": ("Diagnose", self._messaging_diagnose),
@@ -335,6 +360,26 @@ class MessagingHandler(BaseHandler):
                     self.ctx.dialog.msgbox("RX Started", result.message)
                 else:
                     self.ctx.dialog.msgbox("RX Failed", f"{result.message}\n\n{result.error or ''}")
+
+    def _messaging_own_id(self):
+        """BIC-2 DM slice 2: show + edit ``[meshtastic] own_node_id`` (global.ini)
+        IN-APP (MF018, standalone user bar). The map reads it per request, so a
+        save takes effect on the next send/inbox read -- no restart."""
+        from utils import global_config, own_radio
+        self.ctx.dialog.msgbox("Own Radio ID", own_id_summary(own_radio.resolve_own(fresh=False)))
+        if not self.ctx.dialog.yesno(
+                "Own Radio ID",
+                f"Edit [meshtastic] {global_config.OWN_NODE_ID_KEY} in\n"
+                f"{global_config.global_config_path()} ?", default_no=True):
+            return
+        try:
+            path = global_config.ensure_own_node_id_section()
+        except OSError as e:
+            self.ctx.dialog.msgbox("Own Radio ID", f"Could not prepare the file:\n{e}")
+            return
+        from config_edit import edit_config_in_app
+        edit_config_in_app(self.ctx, path, title="Own radio id (global.ini)")
+        self.ctx.dialog.msgbox("Own Radio ID", own_id_summary(own_radio.resolve_own(fresh=False)))
 
     def _messaging_diagnose(self):
         clear_screen()

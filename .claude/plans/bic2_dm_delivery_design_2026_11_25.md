@@ -109,6 +109,7 @@ OVERRIDE the rows above where they differ):
     read candidates from existing records for confirmation, never infer them
     from mesh traffic.
   - Starts only after a CLEAN Fable round on slice 1.
+  - **BUILT 2026-11-27 (Opus 5.5, operator: home = global.ini `[meshtastic] own_node_id`)** — `global_config.read_own_node_id` (strict 8-hex, lookalike keys refused, unreadable ≠ unset) + `own_radio.resolve_own` (THE answer: config beside the connection id; disagreeing → no stamp + note naming both) → inbox send stamp + witness line (`own_id_source`, `own_id_note`); TUI Messaging → Own Radio ID (in-app editor, template). Tests `tests/test_own_node_config.py`; conftest pins the config read. OWED: Fable BY RUNNING before deploy; the `docs/global_config.md` schema line in meshing_around_meshforge; fleet ids from the OPERATOR.
 
 ## 4c. Build-time decisions — slice 1 (2026-11-25 16:3x–17:3x HST, Opus 5.5)
 
