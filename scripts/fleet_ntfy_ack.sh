@@ -56,6 +56,12 @@ set -uo pipefail
 STATE="${MESHFORGE_ACK_STATE:-$HOME/ntfy_ack_state.json}"
 PING_INTERVAL_S="${MESHFORGE_ACK_PING_INTERVAL_S:-604800}"   # 7 days
 ESCALATE_AFTER=2          # email after this many consecutive unacked weeks
+# Re-send the CURRENT page while it stays un-acked (2026-11-27). ntfy.sh caches
+# only ~12 h: a weekly page the operator did not catch inside that window
+# vanished from the web page too ("no place to ack") while the probe kept
+# asking for a tap on it. One reminder per interval keeps a tappable copy in
+# the cache; it never moves the weekly clock or the miss count.
+REMINDER_INTERVAL_S="${MESHFORGE_ACK_REMINDER_INTERVAL_S:-86400}"   # 1 day
 POLL_SINCE="3h"           # how far back to poll for a tap-to-ack. Go-duration
                           # (ntfy 'since' rejects a 'd' unit); covers the hourly
                           # cron cadence with margin. ntfy.sh caches only ~12h
@@ -84,18 +90,23 @@ fi
 now_ts="$(date +%s)"
 
 # 1. Load prior state (best-effort; absent/garbage -> zeros).
-state_line="$(python3 - "$STATE" <<'PY' 2>/dev/null || echo "0 0 0 0"
+state_line="$(python3 - "$STATE" <<'PY' 2>/dev/null || echo "0 0 0 0 0"
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
     print(int(d.get("last_ping_ts", 0)), int(d.get("last_ack_ts", 0)),
           int(d.get("consecutive_unacked_pings", 0)),
-          int(d.get("unacked_ping_ts", 0) or 0))
+          int(d.get("unacked_ping_ts", 0) or 0),
+          int(d.get("last_reminder_ts", 0) or 0))
 except Exception:
-    print("0 0 0 0")
+    print("0 0 0 0 0")
 PY
 )"
-read -r last_ping_ts last_ack_ts unacked unacked_ping_ts <<< "$state_line"
+read -r last_ping_ts last_ack_ts unacked unacked_ping_ts last_reminder_ts <<< "$state_line"
+[ -n "${last_reminder_ts:-}" ] || last_reminder_ts=0
+# hfm #6: a stamp in the FUTURE (RTC-less clock stepped back) must not read as
+# "reminded just now" for days — forget it, at most one extra reminder.
+[ "$last_reminder_ts" -le "$now_ts" ] || last_reminder_ts=0
 [ -n "${last_ping_ts:-}" ]   || last_ping_ts=0
 [ -n "${last_ack_ts:-}" ]    || last_ack_ts=0
 [ -n "${unacked:-}" ]        || unacked=0
@@ -167,6 +178,25 @@ if [ "$newest_ack" -gt "$last_ack_ts" ]; then
     last_ack_ts="$newest_ack"
 fi
 
+# publish_page <title> <lead sentence>  -> curl's exit status
+# "http" action with method=POST (07-26 review D11): only a deliberate tap
+# publishes the ack. The tap publishes onto THIS topic (09-03) so the phone
+# sees "Receipt confirmed" land at once — the tap is no longer invisible.
+# headers.* ride the action; no comma may appear in any value (ntfy's
+# simple-format delimiter). The weekly page and the reminder share this ONE
+# body so their buttons can never drift apart (hfm #5).
+publish_page() {
+    local title="$1" lead="$2"
+    local pub_args=( -s --max-time 12
+        -H "Title: $title"
+        -H "Priority: default"
+        -H "Tags: white_check_mark,fleet"
+        -H "Actions: http, $BUTTON_LABEL, https://ntfy.sh/$TOPIC, method=POST, body=$ACK_BODY, headers.Title=$ACK_TITLE, headers.Priority=low, headers.Tags=white_check_mark, clear=true" )
+    [ -n "$TOKEN" ] && pub_args+=( -H "Authorization: Bearer $TOKEN" )
+    pub_args+=( --data-raw "$lead If you can see this, tap '$BUTTON_LABEL' once: a '$ACK_TITLE' notice appears on this topic within a second (that IS the ack). Un-acked pages are re-sent daily (ntfy.sh keeps only ~12 h). No tap for ~2 weeks -> the fleet emails you (the alert channel to your device may be dark)." "https://ntfy.sh/$TOPIC" )
+    curl "${pub_args[@]}" >/dev/null 2>&1
+}
+
 # 3. Decide whether to send this week's ping.
 if [ "$(( now_ts - last_ping_ts ))" -ge "$PING_INTERVAL_S" ]; then
     # Was the PREVIOUS ping acked? (first-ever ping: last_ping_ts=0 -> no penalty)
@@ -176,35 +206,34 @@ if [ "$(( now_ts - last_ping_ts ))" -ge "$PING_INTERVAL_S" ]; then
         unacked="$(( unacked + 1 ))"
         unacked_ping_ts="$last_ping_ts"     # the page that went un-acked (probe names it)
     fi
-    # "http" action with method=POST (07-26 review D11): only a deliberate tap
-    # publishes the ack. The tap publishes onto THIS topic (09-03) so the phone
-    # sees "Receipt confirmed" land at once — the tap is no longer invisible.
-    # headers.* ride the action; no comma may appear in any value (ntfy's
-    # simple-format delimiter).
-    pub_args=( -s --max-time 12
-        -H "Title: Fleet alert check - tap to confirm"
-        -H "Priority: default"
-        -H "Tags: white_check_mark,fleet"
-        -H "Actions: http, $BUTTON_LABEL, https://ntfy.sh/$TOPIC, method=POST, body=$ACK_BODY, headers.Title=$ACK_TITLE, headers.Priority=low, headers.Tags=white_check_mark, clear=true" )
-    [ -n "$TOKEN" ] && pub_args+=( -H "Authorization: Bearer $TOKEN" )
-    pub_args+=( --data-raw "Weekly fleet-alert receipt check. If you can see this, tap '$BUTTON_LABEL' once: a '$ACK_TITLE' notice appears on this topic within a second (that IS the ack). No tap for ~2 weeks -> the fleet emails you (the alert channel to your device may be dark)." "https://ntfy.sh/$TOPIC" )
     # Only advance last_ping_ts on a successful publish (a failed publish retries
     # next hour; the publish-path failure itself is Phase-2 loopback's job).
-    if curl "${pub_args[@]}" >/dev/null 2>&1; then
+    if publish_page "Fleet alert check - tap to confirm" "Weekly fleet-alert receipt check."; then
         last_ping_ts="$now_ts"
+        last_reminder_ts=0
     fi
 else
     # Mid-week: a late ack for the CURRENT ping clears the counter.
     if [ "$last_ping_ts" -gt 0 ] && [ "$last_ack_ts" -ge "$last_ping_ts" ]; then
         unacked=0; unacked_ping_ts=0
+    elif [ "$last_ping_ts" -gt 0 ] \
+         && [ "$(( now_ts - last_ping_ts ))" -ge "$REMINDER_INTERVAL_S" ] \
+         && [ "$(( now_ts - last_reminder_ts ))" -ge "$REMINDER_INTERVAL_S" ]; then
+        # The current page is un-acked and has likely aged out of ntfy.sh's
+        # ~12 h cache: re-send it. A tap on the reminder acks the CURRENT page
+        # (its ack lands after last_ping_ts). Weekly clock + miss count untouched.
+        if publish_page "Fleet alert check (reminder) - tap to confirm" \
+                "Reminder: this week's fleet-alert receipt check is still un-acked."; then
+            last_reminder_ts="$now_ts"
+        fi
     fi
 fi
 
 # 4. Write state atomically (the read-only watchdog probe reads it).
 python3 - "$STATE" "$last_ping_ts" "$last_ack_ts" "$unacked" "$now_ts" "$PING_INTERVAL_S" \
-          "$unacked_ping_ts" "$acks_seen" "$legacy_seen" "$ack_source" <<'PY' 2>/dev/null || true
+          "$unacked_ping_ts" "$acks_seen" "$legacy_seen" "$ack_source" "$last_reminder_ts" <<'PY' 2>/dev/null || true
 import json, os, sys, tempfile
-path, lp, la, un, nowts, interval, upt, seen, lseen, src = sys.argv[1:11]
+path, lp, la, un, nowts, interval, upt, seen, lseen, src, rem = sys.argv[1:12]
 doc = {"last_ping_ts": int(lp), "last_ack_ts": int(la),
        "consecutive_unacked_pings": int(un), "last_poll_ts": int(nowts),
        "ping_interval_s": int(interval),
@@ -213,7 +242,9 @@ doc = {"last_ping_ts": int(lp), "last_ack_ts": int(la),
        "unacked_ping_ts": int(upt),
        # witnesses for the last poll: how many acks each leg saw, which won
        "acks_seen_last_poll": int(seen), "legacy_acks_seen_last_poll": int(lseen),
-       "last_ack_source": src or None}
+       "last_ack_source": src or None,
+       # last daily re-send of the CURRENT un-acked page (0 = none this week)
+       "last_reminder_ts": int(rem)}
 d = os.path.dirname(path) or "."
 fd, tmp = tempfile.mkstemp(dir=d, prefix=".ntfy_ack.")
 with os.fdopen(fd, "w") as fh:

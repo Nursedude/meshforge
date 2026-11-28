@@ -774,7 +774,9 @@ def probe_ntfy_ack_stale(
                     "weekly page(s) with no tap-to-ack." + which + " Your phone "
                     "may not be receiving fleet pages (wrong/dead topic, app "
                     "killed, notifications off — the exact 06-14→17 failure). "
-                    "Tap 'Confirm receipt' on the next weekly page, or check "
+                    "Tap 'Confirm receipt' on the newest fleet-alert check "
+                    "(an un-acked page is re-sent daily — ntfy.sh keeps only "
+                    "~12 h, so an older one may be gone), or check "
                     "your ntfy subscription. The cron escalates via the Phase-1 "
                     "EMAIL backbone; this is visibility."),
             issue_ref=None,

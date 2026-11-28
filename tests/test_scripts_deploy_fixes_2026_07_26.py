@@ -333,3 +333,102 @@ class TestLintOperatorPatternsSudoAndFormat:
         monkeypatch.delenv(lint.MF014_LOCAL_PATTERNS_ENV, raising=False)
         pats = lint.load_local_operator_patterns()
         assert len(pats) == 1 and pats[0][1] == "found it"
+
+
+# ── 2026-11-27: the page must still be tappable when the operator looks ──────
+# ntfy.sh caches only ~12 h. A weekly page the operator did not catch inside
+# that window vanished from the web page too — "no place to ack" (operator
+# 11-27: the 11-26 15:17 page was gone; oldest cached message 09:27 the next
+# day) — while the probe kept asking for a tap on it. While the CURRENT page
+# is un-acked, the monitor re-sends it once per reminder interval so a
+# tappable copy always sits inside the cache. Still POST-only, still a tap.
+
+import json as _json
+import subprocess as _subprocess
+import time as _time
+
+
+class TestNtfyAckReminderWhileUnacked:
+    SH = REPO_ROOT / "scripts" / "fleet_ntfy_ack.sh"
+
+    def _run(self, tmp_path, state):
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        log = tmp_path / "curl.log"
+        curl = bindir / "curl"
+        curl.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "CALL $*" >> "{log}"\n'
+            "exit 0\n")
+        curl.chmod(0o755)
+        sp = tmp_path / "ack_state.json"
+        sp.write_text(_json.dumps(state))
+        home = tmp_path / "home"
+        home.mkdir()
+        env = {
+            "PATH": f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+            "HOME": str(home),
+            "MESHFORGE_NTFY_TOPIC": "unit-test-topic",
+            "MESHFORGE_NTFY_TOKEN": "",
+            "MESHFORGE_ACK_STATE": str(sp),
+        }
+        r = _subprocess.run(["bash", str(self.SH)], env=env, timeout=60,
+                            capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        calls = log.read_text().splitlines() if log.exists() else []
+        pubs = [c for c in calls if "json?poll" not in c]
+        return pubs, _json.loads(sp.read_text())
+
+    def _state(self, now, *, ping_age, ack_age=None, reminder_age=None):
+        st = {"last_ping_ts": now - ping_age,
+              "last_ack_ts": (now - ack_age) if ack_age is not None else 0,
+              "consecutive_unacked_pings": 1,
+              "unacked_ping_ts": now - ping_age - 604800}
+        if reminder_age is not None:
+            st["last_reminder_ts"] = now - reminder_age
+        return st
+
+    def test_unacked_page_older_than_a_day_is_resent_once(self, tmp_path):
+        now = int(_time.time())
+        pubs, st = self._run(tmp_path, self._state(now, ping_age=25 * 3600))
+        assert len(pubs) == 1, pubs
+        assert "method=POST" in pubs[0] and "http, Confirm receipt" in pubs[0]
+        assert "reminder" in pubs[0].lower()
+        # the WEEKLY clock and the miss count are untouched by a reminder
+        assert st["last_ping_ts"] == now - 25 * 3600
+        assert st["consecutive_unacked_pings"] == 1
+        assert st["last_reminder_ts"] >= now
+
+    def test_recent_reminder_is_not_repeated(self, tmp_path):
+        now = int(_time.time())
+        pubs, _ = self._run(tmp_path, self._state(
+            now, ping_age=30 * 3600, reminder_age=2 * 3600))
+        assert pubs == []
+
+    def test_fresh_page_gets_no_reminder(self, tmp_path):
+        now = int(_time.time())
+        pubs, _ = self._run(tmp_path, self._state(now, ping_age=2 * 3600))
+        assert pubs == []
+
+    def test_acked_page_gets_no_reminder(self, tmp_path):
+        now = int(_time.time())
+        pubs, st = self._run(tmp_path, self._state(
+            now, ping_age=30 * 3600, ack_age=29 * 3600))
+        assert pubs == []
+        assert st["consecutive_unacked_pings"] == 0
+
+    def test_reminder_stamp_in_the_future_does_not_mute_forever(self, tmp_path):
+        """hfm #6: an RTC-less box that stepped its clock back must not read a
+        future stamp as 'reminded just now' for days."""
+        now = int(_time.time())
+        pubs, _ = self._run(tmp_path, self._state(
+            now, ping_age=30 * 3600, reminder_age=-5 * 86400))
+        assert len(pubs) == 1, pubs
+
+    def test_weekly_ping_resets_the_reminder_clock(self, tmp_path):
+        now = int(_time.time())
+        pubs, st = self._run(tmp_path, self._state(
+            now, ping_age=604800 + 60, reminder_age=3600))
+        assert len(pubs) == 1 and "reminder" not in pubs[0].lower(), pubs
+        assert st["last_ping_ts"] >= now
+        assert st.get("last_reminder_ts", 0) == 0
