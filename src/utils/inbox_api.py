@@ -576,10 +576,13 @@ def _witness_line(snap: Dict[str, Any], now: float, late_acks: int,
              " · own radio id: unknown (a DM to it is ruled out only by its uplinked header)")
     if own.get("note"):
         line += f" · ⚠ {own['note']}"
+    elif own.get("info"):
+        line += f" · {own['info']}"
     return {"acks_visible": w.since is not None, "since": w.since, "why": w.why,
             "channels": visible, "unreadable": unreadable, "counts": snap["counts"],
             "late_acks": late_acks, "own_id": None if num is None else f"!{num:08x}",
             "own_id_source": own.get("source") or None, "own_id_note": own.get("note") or None,
+            "own_id_info": own.get("info") or None,
             "refuted_kept": len(_REFUTED),
             "line": line}
 

@@ -193,7 +193,7 @@ def ensure_own_node_id_section(path: Optional[Path] = None) -> Path:
     p = global_config_path() if path is None else Path(path)
     target = p.resolve() if p.is_symlink() else p
     try:
-        existing = target.read_bytes().decode("utf-8")
+        existing = target.read_bytes().decode("utf-8-sig")   # same rule as the reader (r3 N3)
     except FileNotFoundError:
         existing = None
     except UnicodeDecodeError as e:

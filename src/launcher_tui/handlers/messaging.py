@@ -36,10 +36,9 @@ def own_id_summary(own) -> str:
         lines.append("This box's radio id: UNKNOWN")
         so = own.get("self_only")
         if isinstance(so, int) and not isinstance(so, bool):
-            lines.append(f"Configured: !{so:08x}. Whether it is corroborated is judged LIVE by")
-            lines.append("the map (a radio read or one of this box's own DM headers matching it")
-            lines.append("in the last hour) -- see the /inbox status line. Uncorroborated, it")
-            lines.append("only marks a DM to that id as 'to myself' (never delivered).")
+            lines.append(f"Configured: !{so:08x}. It only marks a DM to that id as 'to myself'")
+            lines.append("(never delivered). Config alone never rules a self-DM out: this box")
+            lines.append("does not yet MEASURE its own radio id (planned).")
         lines.append("A DM to this box's own radio is then ruled out only by the DM's own")
         lines.append("uplinked header; without it a real delivery can stay 'unconfirmed'.")
     if own.get("note"):
@@ -50,8 +49,8 @@ def own_id_summary(own) -> str:
         lines.append("Not configured. Set [meshtastic] own_node_id = !xxxxxxxx (8 hex digits,")
         lines.append("as your radio prints it). Empty = unknown, never a guess.")
     lines.append("")
-    lines.append("(This screen sees the config + its recorded corroboration only; the map's")
-    lines.append(" /inbox status line is the live view, with the radio connection.)")
+    lines.append("(This screen sees the config only; the map's /inbox status line is the")
+    lines.append(" live view, with any radio connection read and contradiction.)")
     return "\n".join(lines)
 
 

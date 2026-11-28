@@ -157,10 +157,12 @@ class TestEnsureSectionR1Nits:
 
 
 # ── resolve_own: config beside the connection, ONE answer ───────────────────
-# Fable r1 (7a8b185a) I2 + operator 11-27 "corroborate first": a configured id
-# rules a self-DM OUT only once a connection read or one of this box's own DM
-# headers has matched it. Until then it is ASSERTED: it may mark a DM to that
-# very id as self (never delivered), nothing more.
+# History: r1 "corroborate first" -> r2 in-memory shelf life -> r3 NOT CLEAN
+# (evidence age = first sight, not the header's age). Operator 11-27 "measure
+# the id instead": config NEVER rules a self-DM out. Only a radio connection's
+# read does; the configured id marks a DM addressed to it as self (never
+# delivered); disagreeing evidence vetoes and is said. Test names below keep
+# the round that drove them.
 
 @pytest.fixture
 def cfg(monkeypatch):
@@ -177,13 +179,6 @@ def cfg(monkeypatch):
 W = own_radio.OWN_FRESH_S
 
 
-# ── resolve_own: THE seam (r2 fold: corroboration is in-memory evidence with
-# the arc's own shelf life). A configured id may RULE A SELF-DM OUT only while
-# a radio read or one of this box's own DM headers matched it within
-# OWN_FRESH_S, no own-DM header contradicted it within OWN_FRESH_S, and no
-# connection read of ANY age disagrees. Otherwise it is ASSERTED: stamped only
-# on a DM addressed to it (-> self, never delivered).
-
 class TestResolveOwn:
 
     def test_nothing_known_is_unknown(self, cfg):
@@ -194,7 +189,7 @@ class TestResolveOwn:
         cfg(state="ok", num=ME, why="")
         r = own_radio.resolve_own(now=1000.0)
         assert r["num"] is None and r["self_only"] == ME and r["trust"] == "asserted"
-        assert "not corroborated" in r["note"]
+        assert r["note"] == "" and "self" in r["info"]
 
     def test_connection_alone_is_today(self, cfg):
         own_radio.note_own_node(ME, source="map collector", now=1000.0)
@@ -205,7 +200,7 @@ class TestResolveOwn:
         cfg(state="ok", num=ME, why="")
         own_radio.note_own_node(ME, source="map collector", now=1000.0)
         r = own_radio.resolve_own(now=1000.0 + W - 1)
-        assert r["num"] == ME and r["trust"] == "corroborated" and "map collector" in r["source"]
+        assert r["num"] == ME and "map collector" in r["source"]
 
     def test_r2_s3_an_old_agreeing_connection_does_not_corroborate(self, cfg):
         """r2 I-A S3: a 5 h-old agreeing read stamped the config id after a swap."""
@@ -214,11 +209,14 @@ class TestResolveOwn:
         r = own_radio.resolve_own(now=1000.0 + 5 * 3600)
         assert r["num"] is None and r["self_only"] == ME and r["trust"] == "asserted"
 
-    def test_a_fresh_header_corroborates(self, cfg):
+    def test_r3_a_matching_header_never_makes_config_authority(self, cfg):
+        """r3 I-1 + F-1, operator 11-27 "measure the id instead": header
+        evidence ages by first sight, not by the header's own age, so a match
+        can be stale by hours. Config alone NEVER rules a self-DM out."""
         cfg(state="ok", num=ME, why="")
         own_radio.observe_own_headers([(1, ME)], now=1000.0)
-        r = own_radio.resolve_own(now=1000.0 + W - 1)
-        assert r["num"] == ME and r["trust"] == "corroborated" and "header" in r["source"]
+        r = own_radio.resolve_own(now=1001.0)
+        assert r["num"] is None and r["self_only"] == ME and r["trust"] == "asserted"
 
     def test_r2_s2_header_corroboration_expires(self, cfg):
         cfg(state="ok", num=ME, why="")
@@ -273,13 +271,13 @@ class TestResolveOwn:
         own_radio.observe_own_headers([(1, OTHER)], now=9000.0)
         assert own_radio.resolve_own(now=1001.0)["num"] is None
 
-    def test_r2_n3_a_config_change_forgets_the_old_values_evidence(self, cfg):
+    def test_r3_a_config_flap_never_re_admits_authority(self, cfg):
         cfg(state="ok", num=ME, why="")
         own_radio.observe_own_headers([(1, ME)], now=1000.0)
         cfg(state="ok", num=OTHER, why="")
-        assert own_radio.resolve_own(now=1001.0)["trust"] == "asserted"
         cfg(state="ok", num=ME, why="")
-        assert own_radio.resolve_own(now=1002.0)["trust"] == "asserted"
+        own_radio.observe_own_headers([(1, ME)], now=1000.0 + 5 * 3600)
+        assert own_radio.resolve_own(now=1000.0 + 5 * 3600)["num"] is None
 
     def test_each_header_counts_once_from_first_sight(self, cfg):
         cfg(state="ok", num=ME, why="")
@@ -401,13 +399,13 @@ class TestConsumers:
         cfg(state="ok", num=ME, why="")
         w = self._line()
         assert "own radio id: unknown" in w["line"] and "!6201ce25" in w["line"]
-        assert "not corroborated" in w["line"]
+        assert "marks a DM to it as self" in w["line"]
 
-    def test_the_witness_line_names_a_corroborated_config(self, cfg):
+    def test_r3_f1_an_asserted_id_is_said_without_a_warning(self, cfg):
+        """r3 F-1: a correctly configured idle box carried a permanent ⚠."""
         cfg(state="ok", num=ME, why="")
-        own_radio.observe_own_headers([(1, ME)], now=999.0)
         w = self._line()
-        assert "own radio id: !6201ce25 (from config" in w["line"] and w["own_id"] == "!6201ce25"
+        assert "⚠" not in w["line"] and "!6201ce25" in w["line"] and w["own_id"] is None
 
     def test_the_witness_line_says_a_mismatch(self, cfg):
         cfg(state="ok", num=OTHER, why="")
@@ -421,11 +419,13 @@ class TestConsumers:
         w = self._line()
         assert "refused" in w["line"] and "6201ce25" in w["line"]
 
-    def test_a_corroborated_config_id_is_stamped(self, cfg, tmp_path, monkeypatch):
+    def test_r3_i1_a_matching_header_never_stamps_config_on_a_dm_elsewhere(self, cfg, tmp_path, monkeypatch):
+        """r3 I-1 end of the stamp: a header that matched (possibly hours stale)
+        never lets config rule a self-DM out on a DM to another node."""
         import time as _t
-        cfg(state="ok", num=ME, why="")
-        own_radio.observe_own_headers([(1, ME)], now=_t.time())
-        assert _send(monkeypatch, tmp_path, "!0a1b2c3d") == [(ME,)]
+        cfg(state="ok", num=OTHER, why="")
+        own_radio.observe_own_headers([(1, OTHER)], now=_t.time())
+        assert _send(monkeypatch, tmp_path, "!6201ce25") == []
 
     def test_r1_i2_an_asserted_config_id_never_rules_a_self_dm_out(self, cfg, tmp_path, monkeypatch):
         from utils import dm_delivery as dd
@@ -508,13 +508,22 @@ class TestTuiSurface:
                            "note": "config says !0a1b2c3d but map collector read !6201ce25"})
         assert "UNKNOWN" in s and "WARNING" in s and "!0a1b2c3d" in s
 
-    def test_summary_sends_corroboration_to_the_live_view(self):
-        """The TUI process holds no radio evidence: it can never say
-        'corroborated'; it names the configured id and where it is judged."""
-        s = self._summary({"num": None, "self_only": ME, "source": "", "config": "ok",
-                           "trust": "asserted", "note": "configured !6201ce25 not corroborated"})
-        assert "!6201ce25" in s and "/inbox" in s and "judged" in s
-
     @pytest.mark.parametrize("garbage", [None, [], {"num": True}, {"num": "!6201ce25"}])
     def test_summary_never_raises_or_invents_an_id(self, garbage):
         assert "UNKNOWN" in self._summary(garbage)
+
+    def test_r3_n4_the_tui_never_claims_a_recorded_corroboration(self):
+        s = self._summary({"num": None, "self_only": ME, "source": "", "config": "ok",
+                           "trust": "asserted", "note": "", "info": "x"})
+        assert "recorded" not in s and "corroborat" not in s.lower()
+
+
+class TestR3BomSymmetry:
+
+    def test_r3_n3_the_editor_opens_what_the_reader_accepts(self, tmp_path, monkeypatch):
+        import utils.paths as up
+        monkeypatch.setattr(up, "chown_to_operator", lambda *p: None)
+        p = tmp_path / "global.ini"
+        p.write_bytes(b"\xef\xbb\xbf[mqtt]\nbroker = b\n")
+        global_config.ensure_own_node_id_section(p)
+        assert "[meshtastic]" in p.read_text(encoding="utf-8-sig")

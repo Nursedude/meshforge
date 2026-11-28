@@ -88,7 +88,6 @@ def _read_config() -> Dict[str, Any]:
 #: The reader's closed answer set (r1 #8): anything else is refused, said.
 CONFIG_STATES = ("unset", "ok", "invalid", "unreadable")
 #: Trust of a configured id (operator 11-27 "corroborate first").
-TRUST_CORROBORATED = "corroborated"
 TRUST_CONTRADICTED = "contradicted"
 TRUST_ASSERTED = "asserted"
 #: Bound on the own-DM packet ids already counted as evidence.
@@ -103,15 +102,13 @@ SEEN_PIDS_MAX = 4096
 #: Each own-DM header counts ONCE, at first sight (a re-read of the witness
 #: ring can neither refresh a match nor undo a contradiction).
 _EVID_LOCK = threading.Lock()
-_EVID: Dict[str, Any] = {"cnum": None, "match_ts": None, "match_via": "",
-                         "contra_ts": None, "contra_seen": None, "pids": {}}
+_EVID: Dict[str, Any] = {"cnum": None, "contra_ts": None, "contra_seen": None, "pids": {}}
 
 
 def _evid_for(cnum: int) -> Dict[str, Any]:
     """Caller holds _EVID_LOCK. Resets the evidence when the config value moved."""
     if _EVID["cnum"] != cnum:
-        _EVID.update(cnum=cnum, match_ts=None, match_via="", contra_ts=None,
-                     contra_seen=None, pids={})
+        _EVID.update(cnum=cnum, contra_ts=None, contra_seen=None, pids={})
     return _EVID
 
 
@@ -141,10 +138,7 @@ def observe_own_headers(items: Any, *, now: Optional[float] = None) -> None:
             ev["pids"][pid] = t
             if len(ev["pids"]) > SEEN_PIDS_MAX:
                 ev["pids"].pop(next(iter(ev["pids"])))
-            if int(num) == cnum:
-                if ev["match_ts"] is None or t > ev["match_ts"]:
-                    ev["match_ts"], ev["match_via"] = t, "this box's own DM header"
-            elif ev["contra_ts"] is None or t > ev["contra_ts"]:
+            if int(num) != cnum and (ev["contra_ts"] is None or t > ev["contra_ts"]):
                 ev["contra_ts"], ev["contra_seen"] = t, int(num)
 
 
@@ -155,23 +149,24 @@ def _within(ts: Optional[float], now: float) -> bool:
 def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str, Any]:
     """THE own-id answer every consumer reads.
 
-    ``{"num", "self_only", "source", "note", "config", "trust"}``:
-      ``num``       an id that may RULE OUT a self-DM -- a fresh connection
-                    read, or a configured id CORROBORATED within OWN_FRESH_S
-                    (a fresh agreeing connection read or own-DM header) with
-                    no contradiction in that window -- else None;
-      ``self_only`` an ASSERTED configured id: a send may stamp it only on a
-                    DM addressed to it (-> self, never delivered).
-    Vetoes (doubt refuses): a connection read of ANY age that disagrees (r1
-    I1); an own-DM header that disagreed within OWN_FRESH_S, or stamped in
-    the future (clock step, hfm #6). ``fresh`` = what a send may stamp from a
-    connection alone; ``fresh=False`` = the witness's last-known view.
-    Read-only: evidence is written only by ``observe_own_headers`` and
+    ``{"num", "self_only", "source", "note", "info", "config", "trust"}``:
+      ``num``       an id that may RULE OUT a self-DM -- only ever a radio
+                    connection's read (fresh for a send; ``fresh=False`` = the
+                    witness's last-known view). Config alone NEVER rules a
+                    self-DM out (Fable r1-r3: an asserted id is only as good
+                    as fresh evidence, and the evidence's age was unmeasured
+                    three ways; operator 11-27: "measure the id instead");
+      ``self_only`` the configured id: a send may stamp it only on a DM
+                    addressed to it (-> self, never delivered).
+    Vetoes (doubt refuses, said in ``note``): a connection read of ANY age that
+    disagrees (r1 I1); an own-DM header that disagreed within OWN_FRESH_S, or
+    stamped in the future (hfm #6). ``info`` says the asserted state without a
+    warning (r3 F-1). Evidence is written only by ``observe_own_headers`` and
     ``note_own_node``.
     """
     t = time.time() if now is None else now
     cfg = _read_config()
-    out = {"num": None, "self_only": None, "source": "", "note": "",
+    out = {"num": None, "self_only": None, "source": "", "note": "", "info": "",
            "config": "unreadable", "trust": ""}
     if not isinstance(cfg, dict) or cfg.get("state") not in CONFIG_STATES:
         cfg = {"state": "unreadable", "num": None,
@@ -206,15 +201,16 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str,
             f"!{ev['contra_seen']:08x} — not used; fix [meshtastic] own_node_id in global.ini"))
         return out
     conn_ts = st.get("ts") if conn_any == cnum else None
-    if conn_any == cnum and _within(conn_ts if isinstance(conn_ts, (int, float)) else None, t):
-        out.update(num=cnum, trust=TRUST_CORROBORATED, source=f"config, confirmed by {csrc}")
-    elif _within(ev["match_ts"], t):
-        out.update(num=cnum, trust=TRUST_CORROBORATED,
-                   source=f"config, corroborated by {ev['match_via']}")
+    if (fresh or conn_any is None) and conn_any == cnum and not _within(
+            conn_ts if isinstance(conn_ts, (int, float)) else None, t):
+        conn_any = None          # a send stamps a connection id only while fresh
+    if conn_any == cnum:
+        # the CONNECTION's own authority (today's rule), config named beside it
+        out.update(num=cnum, source=f"{csrc}, matching the configured id")
     else:
-        out.update(self_only=cnum, trust=TRUST_ASSERTED, note=(
-            f"configured !{cnum:08x} not corroborated in the last {OWN_FRESH_S // 60} min "
-            "(no radio read or own DM header matched it) — used only to mark a DM to it as self"))
+        out.update(self_only=cnum, trust=TRUST_ASSERTED, info=(
+            f"configured !{cnum:08x} marks a DM to it as self only — config alone never "
+            "rules a self-DM out (this box does not yet measure its own radio id)"))
     return out
 
 
@@ -224,5 +220,4 @@ def _reset() -> None:
     with _LOCK:
         _OWN = None
     with _EVID_LOCK:
-        _EVID.update(cnum=None, match_ts=None, match_via="", contra_ts=None,
-                     contra_seen=None, pids={})
+        _EVID.update(cnum=None, contra_ts=None, contra_seen=None, pids={})
