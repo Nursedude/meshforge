@@ -9,6 +9,7 @@ registry reads it as a second connection reading. Newest valid reading wins.
 """
 import json
 import os
+import threading
 
 import pytest
 
@@ -73,29 +74,37 @@ class TestReadPeer:
         st = orad.own_node_status(now=NOW)
         assert st["num"] is None and "future" in st["peer_error"]
 
-    def test_stale_reading_is_known_but_not_fresh(self, peer):
+    def test_stale_file_is_no_reading_and_says_its_age(self, peer):
+        """r4 F5: a dead gateway's file never vouches -- not even as the
+        witness's last-known id or as a config veto."""
         _write(peer, num=ID_A, source="gw", ts=NOW - orad.OWN_FRESH_S - 1)
-        assert orad.own_node_status(now=NOW)["num"] == ID_A   # witness: last known
-        assert orad.fresh_own_node(NOW) is None                # a send: not stamped
+        st = orad.own_node_status(now=NOW)
+        assert st["num"] is None and st["readings"] == []
+        assert "h old" in st["peer_error"]
+        assert orad.fresh_own_node(NOW) is None
 
 
 class TestNewestWins:
-    def test_in_process_newer_than_file(self, peer):
+    def test_in_process_newer_than_file_same_id(self, peer):
         _write(peer, num=ID_A, source="gw", ts=NOW - 100)
-        orad.note_own_node(ID_B, source="map collector connection", now=NOW - 10)
+        orad.note_own_node(ID_A, source="map collector connection", now=NOW - 10)
         st = orad.own_node_status(now=NOW)
-        assert st["num"] == ID_B and "map collector" in st["source"]
+        assert st["num"] == ID_A and "map collector" in st["source"] and st["note"] == ""
 
-    def test_file_newer_than_in_process(self, peer):
-        orad.note_own_node(ID_B, source="map collector connection", now=NOW - 100)
+    def test_file_newer_than_in_process_same_id(self, peer):
+        orad.note_own_node(ID_A, source="map collector connection", now=NOW - 100)
         _write(peer, num=ID_A, source="gw", ts=NOW - 10)
-        assert orad.own_node_status(now=NOW)["num"] == ID_A
+        st = orad.own_node_status(now=NOW)
+        assert st["num"] == ID_A and st["ts"] == NOW - 10 and st["note"] == ""
         assert orad.fresh_own_node(NOW) == ID_A
 
     def test_superseded_disagreement_is_said(self, peer):
-        orad.note_own_node(ID_B, source="map collector connection", now=NOW - 100)
+        """An older rival PAST the window is superseded (a swap), said."""
+        orad.note_own_node(ID_B, source="map collector connection",
+                           now=NOW - orad.OWN_FRESH_S - 50)
         _write(peer, num=ID_A, source="gw", ts=NOW - 10)
-        assert "superseded" in orad.own_node_status(now=NOW)["note"]
+        st = orad.own_node_status(now=NOW)
+        assert st["num"] == ID_A and "superseded" in st["note"]
 
 
 class TestResolveOwnUsesPeer:
@@ -117,9 +126,12 @@ class TestResolveOwnUsesPeer:
 
 
 class _Iface:
-    def __init__(self, my=None, local=None):
+    def __init__(self, my=None, local=None, live=True):
         self.myInfo = type("M", (), {"my_node_num": my})() if my is not None else None
         self.localNode = type("L", (), {"nodeNum": local})() if local is not None else None
+        self.isConnected = threading.Event()
+        if live:
+            self.isConnected.set()
 
 
 class TestNumFromInterface:
@@ -140,10 +152,10 @@ class TestNumFromInterface:
 
 
 class TestGatewayPublishes:
-    def _handler(self, host, iface):
+    def _handler(self, host, iface, port=4403):
         from gateway.meshtastic_handler import MeshtasticHandler
         h = MeshtasticHandler.__new__(MeshtasticHandler)
-        h.config = type("C", (), {"meshtastic": type("M", (), {"host": host})()})()
+        h.config = type("C", (), {"meshtastic": type("M", (), {"host": host, "port": port})()})()
         h._interface = iface
         h._own_pub_mono = None
         return h
@@ -171,6 +183,102 @@ class TestGatewayPublishes:
         h = self._handler("localhost", object())
         h._publish_own_id(mono=1.0, now=NOW)   # no myInfo at all
         assert not peer.exists()
+
+
+class TestReviewR4:
+    """Fable r4 (11-28), each drill made a test (red on da1e1109)."""
+
+    def _cfg(self, monkeypatch, num):
+        monkeypatch.setattr(orad, "_read_config", lambda: {
+            "state": "ok", "num": num, "why": "", "raw": f"!{num:08x}"})
+
+    def test_f1_dead_link_never_publishes(self, peer):
+        h = TestGatewayPublishes()._handler("localhost", _Iface(my=ID_A, live=False))
+        h._publish_own_id(mono=1.0, now=NOW)
+        assert not peer.exists()
+
+    def test_f1_non_event_is_not_live(self, peer):
+        iface = _Iface(my=ID_A)
+        iface.isConnected = True           # a truthy non-Event proves nothing
+        h = TestGatewayPublishes()._handler("localhost", iface)
+        h._publish_own_id(mono=1.0, now=NOW)
+        assert not peer.exists()
+
+    def test_f2_live_disagreement_refuses(self, peer):
+        orad.note_own_node(ID_B, source="map collector connection", now=NOW - 60)
+        _write(peer, num=ID_A, source="gw", ts=NOW - 5)
+        own = orad.resolve_own(NOW)
+        assert own["num"] is None and "disagree" in own["note"]
+        assert orad.fresh_own_node(NOW) is None
+
+    def test_f2_config_checked_against_every_reading(self, peer, monkeypatch):
+        self._cfg(monkeypatch, ID_A)
+        orad.note_own_node(ID_B, source="map collector connection", now=NOW - 60)
+        _write(peer, num=ID_A, source="gw", ts=NOW - 5)
+        own = orad.resolve_own(NOW)
+        assert own["num"] is None and own["config"] == "mismatch"
+
+    def test_f2_send_stamp_end_to_end(self, peer):
+        """The drill's end: a DM to B while the readings disagree is never
+        stamped with A (which would rule the self-DM out)."""
+        from utils.inbox_api import _send_stamp
+        orad.note_own_node(ID_B, source="map collector connection", now=NOW - 60)
+        _write(peer, num=ID_A, source="gw", ts=NOW - 5)
+        assert _send_stamp(orad.resolve_own(NOW), ID_B) is None
+
+    def test_f3_alt_port_never_publishes(self, peer):
+        h = TestGatewayPublishes()._handler("localhost", _Iface(my=ID_A), port=4404)
+        h._publish_own_id(mono=1.0, now=NOW)
+        assert not peer.exists()
+
+    @pytest.mark.parametrize("host,port,ok", [
+        ("localhost", 4403, True), ("127.0.0.1", "4403", True), ("::1", 4403, True),
+        ("localhost", 4404, False), ("10.0.0.2", 4403, False), ("localhost", None, False),
+        ("localhost", "x", False)])
+    def test_f3_one_rule(self, host, port, ok):
+        assert orad.is_this_box_radio(host, port) is ok
+
+    def test_f3_map_drain_alt_port_never_notes(self):
+        from utils._map_collector_meshtastic import MeshtasticDataCollectorMixin as M
+        obj = type("X", (M,), {"get_meshtasticd_host": lambda s: "localhost",
+                               "get_meshtasticd_port": lambda s: 4404})()
+        orad._reset()
+        obj._own_node_id(_Iface(my=ID_A))
+        assert orad.own_node_status()["readings"] == []
+
+    @pytest.mark.parametrize("body", [
+        "[" * 200_000, '{"num": 5, "ts": -' + "9" * 400 + "}",
+        '{"num": 5, "ts": NaN}', '{"num": 5, "ts": -Infinity}', '{"num": 5, "ts": Infinity}'])
+    def test_f4_never_raises_and_is_said(self, peer, body):
+        peer.write_text(body)
+        st = orad.own_node_status(now=NOW)
+        assert st["num"] is None and st["peer_error"]
+        assert "unreadable" in orad.resolve_own(NOW)["note"]
+
+    def test_f5_stale_file_never_vetoes_good_config(self, peer, monkeypatch):
+        self._cfg(monkeypatch, ID_B)
+        _write(peer, num=ID_A, source="gw", ts=NOW - 90 * 86400)
+        own = orad.resolve_own(NOW)
+        assert own["config"] == "ok" and own["self_only"] == ID_B
+
+    def test_f6_failed_publish_logged_and_spaced(self, peer, monkeypatch, caplog):
+        calls = []
+        monkeypatch.setattr(orad, "publish_own_node",
+                            lambda *a, **k: calls.append(1) or False)
+        h = TestGatewayPublishes()._handler("localhost", _Iface(my=ID_A))
+        with caplog.at_level("WARNING"):
+            h._publish_own_id(mono=1.0, now=NOW)
+            h._publish_own_id(mono=2.0, now=NOW + 1)       # within the interval
+            h._publish_own_id(mono=1.0 + orad.PEER_PUBLISH_S, now=NOW + 2)
+        assert len(calls) == 2
+        assert sum("publish failed" in r.getMessage() for r in caplog.records) == 1
+
+    def test_f7_future_in_process_reading_refused_and_said(self, peer):
+        orad.note_own_node(ID_A, source="map collector connection", now=NOW + 7200)
+        _write(peer, num=ID_A, source="gw", ts=NOW - 5)
+        st = orad.own_node_status(now=NOW)
+        assert st["num"] == ID_A and st["ts"] == NOW - 5
+        assert "future" in st["note"]
 
 
 def test_conftest_pins_the_peer_file():

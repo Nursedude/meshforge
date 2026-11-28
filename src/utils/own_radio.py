@@ -55,18 +55,46 @@ def note_own_node(num: Any, *, source: str, now: Optional[float] = None) -> None
 
 
 #: The gateway's own-id reading, for a box whose gateway owns :4403 and the
-#: map therefore never reads it (#17 defer; measured 11-28: moc). The
+#: map therefore never reads it (#17 defer; measured 11-28 on one box). The
 #: gateway's EXISTING connection is the measurement -- one writer (the
-#: gateway), one reader (this registry). Rewritten every PEER_PUBLISH_S while
-#: connected, so a stopped gateway's reading ages out under OWN_FRESH_S.
+#: gateway), one reader (this registry). ``ts`` = the last time that
+#: connection was CONFIRMED LIVE holding this id (Fable r4 F1: never the bare
+#: write time -- a dead link must not keep vouching). Rewritten every
+#: PEER_PUBLISH_S only while live, so a stopped/dead gateway's reading ages out.
 PEER_FILE_NAME = "own_radio_gateway.json"
 PEER_PUBLISH_S = 300.0
+#: The radio inbox sends through: localhost meshtasticd on its PRIMARY port
+#: (Fable r4 F3: a second meshtasticd on :4404 is another radio).
+PRIMARY_PORT = 4403
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+#: A stamp this far ahead of now is no reading (hfm #6).
+FUTURE_SLACK_S = 60.0
 
 
 def peer_path():
     """Seam (tests pin it: conftest -- never this box's real file)."""
     from utils.paths import MeshForgePaths
     return MeshForgePaths.get_data_dir() / PEER_FILE_NAME
+
+
+def is_this_box_radio(host: Any, port: Any) -> bool:
+    """ONE rule for "this connection is to the radio inbox sends through"
+    (map drain + gateway, hfm #5): localhost AND the primary port."""
+    try:
+        return str(host) in _LOCAL_HOSTS and int(port) == PRIMARY_PORT
+    except (TypeError, ValueError):
+        return False
+
+
+def connection_live(interface: Any) -> bool:
+    """True only while a meshtastic library interface's ``isConnected``
+    Event is SET (r4 F1: ``not Event`` is always False -- the truthiness test
+    can never see a dead link). Anything else = not shown live. Never raises."""
+    try:
+        ev = getattr(interface, "isConnected", None)
+        return isinstance(ev, threading.Event) and ev.is_set()
+    except Exception:
+        return False
 
 
 def num_from_interface(interface: Any):
@@ -85,8 +113,9 @@ def num_from_interface(interface: Any):
 
 
 def publish_own_node(num: Any, *, source: str, now: Optional[float] = None) -> bool:
-    """Gateway side: write the id its connection read. Never raises; False
-    when nothing was written (not a node / write fault)."""
+    """Gateway side: write the id its LIVE connection holds (the caller
+    checks ``connection_live``). Never raises; False when nothing was written
+    (not a node / write fault -- the caller logs it, r4 F6)."""
     if not _valid(num):
         return False
     try:
@@ -101,46 +130,78 @@ def publish_own_node(num: Any, *, source: str, now: Optional[float] = None) -> b
         return False
 
 
+def _finite(ts: Any) -> bool:
+    import math
+    try:
+        return (isinstance(ts, (int, float)) and not isinstance(ts, bool)
+                and math.isfinite(float(ts)))
+    except (OverflowError, ValueError, TypeError):
+        return False
+
+
 def _read_peer(now: float) -> Dict[str, Any]:
-    """``{"num", "source", "ts"}`` | ``{"error": why}`` | ``{}`` (no file)."""
+    """``{"num", "source", "ts"}`` | ``{"error": why}`` | ``{}`` (no file).
+    NEVER raises (r4 F4: a corrupt file must not cost a send's row)."""
     import json
     try:
         p = peer_path()
         if not p.exists():
             return {}
         doc = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError) as e:
+        ts = doc.get("ts") if isinstance(doc, dict) else None
+        if not (isinstance(doc, dict) and _valid(doc.get("num")) and _finite(ts)):
+            return {"error": "gateway own-id file unreadable (not a reading)"}
+        ts = float(ts)
+        if ts > now + FUTURE_SLACK_S:
+            return {"error": "gateway own-id file stamped in the future; ignored"}
+        if now - ts > OWN_FRESH_S:        # r4 F5: a dead gateway's file never vouches
+            return {"error": f"gateway own-id reading !{int(doc['num']):08x} is "
+                             f"{(now - ts) / 3600:.1f} h old (gateway not live?); ignored"}
+        return {"num": int(doc["num"]),
+                "source": str(doc.get("source") or "gateway connection")[:80], "ts": ts}
+    except Exception as e:
         return {"error": f"gateway own-id file unreadable ({type(e).__name__})"}
-    ts = doc.get("ts") if isinstance(doc, dict) else None
-    if not (isinstance(doc, dict) and _valid(doc.get("num"))
-            and isinstance(ts, (int, float)) and not isinstance(ts, bool)):
-        return {"error": "gateway own-id file unreadable (not a reading)"}
-    if ts > now + 60:                     # hfm #6: a future stamp is no reading
-        return {"error": "gateway own-id file stamped in the future; ignored"}
-    return {"num": int(doc["num"]), "source": str(doc.get("source") or "gateway connection")[:80],
-            "ts": float(ts)}
 
 
 def own_node_status(now: Optional[float] = None) -> Dict[str, Any]:
-    """The NEWEST valid connection reading -- this process's (the map drain)
-    or the gateway's file. ``{"num", "source", "ts", "note", "peer_error"}``;
-    ``num`` None when unknown. A disagreement the newer reading superseded is
-    said in ``note``; an unreadable file in ``peer_error``."""
+    """Every valid connection reading -- this process's (the map drain, any
+    age: it dies with the process) and the gateway's file (within
+    OWN_FRESH_S). ``{"num", "source", "ts", "note", "peer_error", "readings"}``.
+    Readings that DISAGREE refuse (``num`` None + note; r4 F2: newest-wins
+    settled a doubt) unless the older one is past OWN_FRESH_S (superseded,
+    said). ``readings`` = every reading consulted, so a config check sees all."""
     t = time.time() if now is None else now
     with _LOCK:
         mine = dict(_OWN) if _OWN is not None else None
+    out = {"num": None, "source": "", "ts": None, "note": "", "peer_error": "",
+           "readings": []}
+    notes = []
+    future = None
+    if mine is not None and mine["ts"] > t + FUTURE_SLACK_S:      # r4 F7
+        notes.append(f"this process's reading !{mine['num']:08x} is stamped in the future; "
+                     "not used as the id")
+        future, mine = mine, None
     peer = _read_peer(t)
-    out = {"num": None, "source": "", "ts": None, "note": "",
-           "peer_error": peer.get("error", "")}
+    out["peer_error"] = peer.get("error", "")
     cands = [r for r in (mine, peer if "num" in peer else None) if r]
-    if not cands:
-        return out
-    best = max(cands, key=lambda r: r["ts"])
-    out.update(num=best["num"], source=best["source"], ts=best["ts"])
-    other = [r for r in cands if r is not best and r["num"] != best["num"]]
-    if other:
-        out["note"] = (f"an older reading !{other[0]['num']:08x} ({other[0]['source']}) "
-                       f"was superseded by !{best['num']:08x}")
+    # a future reading is never THE id, but it still counts against a config
+    # that disagrees (r1 I1: doubt refuses)
+    out["readings"] = [(r["num"], r["source"]) for r in cands + ([future] if future else [])]
+    if cands:
+        cands.sort(key=lambda r: r["ts"], reverse=True)
+        best = cands[0]
+        rivals = [r for r in cands[1:] if r["num"] != best["num"]]
+        live_rivals = [r for r in rivals if t - r["ts"] <= OWN_FRESH_S]
+        if live_rivals:
+            r = live_rivals[0]
+            notes.append(f"radio readings disagree: !{best['num']:08x} ({best['source']}) vs "
+                         f"!{r['num']:08x} ({r['source']}) — not used")
+        else:
+            out.update(num=best["num"], source=best["source"], ts=best["ts"])
+            if rivals:
+                notes.append(f"an older reading !{rivals[0]['num']:08x} ({rivals[0]['source']}) "
+                             f"was superseded by !{best['num']:08x}")
+    out["note"] = "; ".join(notes)
     return out
 
 
@@ -263,8 +324,9 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str,
     if state in ("invalid", "unreadable"):
         out["note"] = f"configured own_node_id refused: {cfg.get('why') or state}"
     st = own_node_status(t)
-    if st.get("peer_error"):
-        out["note"] = "; ".join(x for x in (out["note"], st["peer_error"]) if x)
+    # r4 F2: the status's own doubts (disagreement, superseded, refused
+    # file) are SAID on the witness, never dropped
+    out["note"] = "; ".join(x for x in (out["note"], st.get("note"), st.get("peer_error")) if x)
     conn_any = st.get("num") if _valid(st.get("num")) else None
     csrc = st.get("source") or "a connection"
     if cnum is None:
@@ -272,18 +334,23 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str,
         if conn is not None:
             out.update(num=conn, source=csrc)
         return out
-    if conn_any is not None and conn_any != cnum:
-        out.update(config="mismatch", trust=TRUST_CONTRADICTED, note=(
-            f"config says !{cnum:08x} but {csrc} read !{conn_any:08x} — not used "
-            "(stale config? radio swapped?); fix [meshtastic] own_node_id in global.ini"))
+    # r1 I1 + r4 F2: EVERY reading consulted is checked against config, not
+    # only the one chosen
+    against = [(n, src) for n, src in st.get("readings") or () if n != cnum]
+    if against:
+        n, src = against[0]
+        out.update(config="mismatch", trust=TRUST_CONTRADICTED, note="; ".join(x for x in (
+            out["note"],
+            f"config says !{cnum:08x} but {src or 'a connection'} read !{n:08x} — not used "
+            "(stale config? radio swapped?); fix [meshtastic] own_node_id in global.ini") if x))
         return out
     with _EVID_LOCK:
         ev = dict(_evid_for(cnum))
     ct = ev["contra_ts"]
     if ct is not None and (_within(ct, t) or ct > t):
-        out.update(trust=TRUST_CONTRADICTED, note=(
+        out.update(trust=TRUST_CONTRADICTED, note="; ".join(x for x in (out["note"], (
             f"config says !{cnum:08x} but this box's own DM header showed "
-            f"!{ev['contra_seen']:08x} — not used; fix [meshtastic] own_node_id in global.ini"))
+            f"!{ev['contra_seen']:08x} — not used; fix [meshtastic] own_node_id in global.ini")) if x))
         return out
     conn_ts = st.get("ts") if conn_any == cnum else None
     if (fresh or conn_any is None) and conn_any == cnum and not _within(

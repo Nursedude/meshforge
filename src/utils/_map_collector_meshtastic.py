@@ -253,7 +253,7 @@ class MeshtasticDataCollectorMixin:
         """This radio's own node id from the EXISTING connection
         (``myInfo.my_node_num``, else ``localNode.nodeNum``), or None.
         Never inferred from traffic (MAP-H H14 r3 F6)."""
-        from utils.own_radio import note_own_node, num_from_interface
+        from utils.own_radio import is_this_box_radio, note_own_node, num_from_interface
         num, attr = num_from_interface(interface)
         if num is None:
             return None
@@ -263,8 +263,10 @@ class MeshtasticDataCollectorMixin:
         # Measured 11-28: this drain runs EVERY cycle on a meshtasticd box (no
         # /json/*, Issue #76) -- except where the gateway owns :4403, which
         # then publishes the id itself (gateway.meshtastic_handler).
+        # r4 F3: localhost AND the primary port (own_radio.is_this_box_radio)
         host = getattr(self, "get_meshtasticd_host", lambda: "")()
-        if host in ("localhost", "127.0.0.1", "::1"):
+        port = getattr(self, "get_meshtasticd_port", lambda: None)()
+        if is_this_box_radio(host, port):
             note_own_node(num, source=f"map collector connection ({attr})")
         return self._canonical_meshtastic_id("", num)
 

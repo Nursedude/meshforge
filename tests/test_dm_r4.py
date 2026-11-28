@@ -99,6 +99,7 @@ class TestOwnRadioRegistry:
         iface = SimpleNamespace(myInfo=SimpleNamespace(my_node_num=ME), localNode=None)
         collector = MeshtasticDataCollectorMixin.__new__(MeshtasticDataCollectorMixin)
         collector.get_meshtasticd_host = lambda: "localhost"   # r6 #1: the send host only
+        collector.get_meshtasticd_port = lambda: 4403          # r4 F3: the primary port
         MeshtasticDataCollectorMixin._own_node_id(collector, iface)
         assert own_radio.own_node() == ME
 
@@ -265,7 +266,7 @@ class TestInboxOrigin:
         mid = _store(tmp_path, monkeypatch)
         _, out = _reader(mid)(T0, [], full=True)
         assert "own radio id: unknown" in out["dm_witness"]["line"]
-        own_radio.note_own_node(ME, source="test connection")
+        own_radio.note_own_node(ME, source="test connection", now=T0)  # r4 F7: test clock
         _, out = _reader(mid)(T0, [], full=True)
         assert "own radio id: !6201ce25" in out["dm_witness"]["line"]
 

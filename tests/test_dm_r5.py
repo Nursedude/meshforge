@@ -322,7 +322,7 @@ class TestDeliveryShape:
 
     def test_r5_survivor_20_the_witness_names_the_own_id(self, tmp_path, monkeypatch):
         mid = _store(tmp_path, monkeypatch)
-        own_radio.note_own_node(ME, source="t")
+        own_radio.note_own_node(ME, source="t", now=T0)   # r4 F7: on the test's clock
         _, out = _reader(mid)(T0, [], full=True)
         assert out["dm_witness"]["own_id"] == "!6201ce25"
 

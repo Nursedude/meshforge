@@ -136,6 +136,9 @@ class _Collector:
     def get_meshtasticd_host(self):
         return self._host
 
+    def get_meshtasticd_port(self):
+        return 4403      # the primary port (r4 F3: own_radio.is_this_box_radio)
+
     @staticmethod
     def _canonical_meshtastic_id(_id, num):
         return f"!{num:08x}"
