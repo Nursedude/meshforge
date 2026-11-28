@@ -393,3 +393,33 @@ def test_the_tui_clean_bill_needs_a_known_zero_error_count(tmp_path):
 
 
 # status_blocks (/api/status) is pinned in the twin-locked tests/test_mini_state_view.py.
+
+
+# ---- r4 (Fable BY RUNNING, 11-27) ----------------------------------------
+_LONG = "the bridge saw a quiet 15 min window on the secondary preset; " * 14
+
+
+@pytest.mark.parametrize("host", ["a\nb **x** | 🟢 fresh", "x" * 70],
+                         ids=["newline", "too_long"])
+def test_the_oracle_box_name_comes_from_the_view(host, tmp_path):
+    """r4 I3: the oracle prefix still took `host` raw (newline, 70 chars)."""
+    from oracle.snapshot import read_snapshot
+    (tmp_path / "mini_dudeai_state.json").write_text(
+        json.dumps(_base(host=host)), encoding="utf-8")
+    snap = read_snapshot(home=tmp_path, watchdog_path=tmp_path / "no.json",
+                         status={}, nodes={}, now=NOW)
+    assert snap.box != host
+
+
+def test_a_long_detail_box_reads_healthy_on_every_mf_surface(tmp_path):
+    """r4 I1 END state, with the LIVE shape (engine writes details uncapped;
+    7 of 9 live rules were > 200 chars): no surface may call it unreadable."""
+    st = _base(rules={"r": {**_ACTIVE["r"], "last_detail": _LONG},
+                      "q": {"rule_id": "q", "subject": "s",
+                            "currently_active": False, "last_detail": _LONG}})
+    for name, reader in _READERS:
+        out = reader(st, [_esc_row(NOW - 60)], tmp_path)
+        assert "unreadable" not in out, (name, out)
+    from handlers.mini_dudeai import build_findings
+    f = build_findings(st, [], NOW)
+    assert f and f[0]["detail"] == _LONG          # TUI detail kept whole

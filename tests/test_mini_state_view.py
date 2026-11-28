@@ -344,7 +344,9 @@ def test_counts_and_texts_are_bounded():
     v = mini_state_view(_base(error_count=1e308, rule_count=10 ** 300,
                               source_errors=["e" * 20000]))
     assert v["error_count"] is None and "rule_count" in v["unreadable"]
-    assert len(v["source_errors"][0]) <= MAX_TEXT
+    # bounded WITH a marker (r4: never a silent cut, never a refusal)
+    assert len(v["source_errors"][0]) <= MAX_TEXT + 20
+    assert v["source_errors"][0].endswith("[20000 chars]")
 
 
 def test_history_view_copies_rows():
@@ -404,3 +406,86 @@ def test_the_status_block_never_raises_or_echoes_non_finite(extra):
     b = mini_block_from_payload(_base(**extra), now=NOW)
     json.dumps(b, allow_nan=False)
     assert b.get("unreadable"), b
+
+
+# ---- r4 (Fable BY RUNNING, 11-27) ----------------------------------------
+# I1: the 200-char text cap marked ORDINARY rows unreadable — the engine
+# writes `last_detail` uncapped; measured live: 7 of 9 rules > 200 chars, so
+# a healthy box read "unreadable: rules" / DEGRADED / never Quiet, and the
+# TUI cut every detail to 200. A str is never coerced and never truncated by
+# the VIEW; readers keep their own display slicing.
+_LONG = "the bridge saw a quiet 15 min window on the secondary preset; " * 14
+
+
+def test_a_long_string_detail_is_healthy_and_kept_whole():
+    from utils.mini_state_view import mini_state_view, quiet_ok
+    rules = {"r": {**_ACTIVE["r"], "last_detail": _LONG},
+             "q": {"rule_id": "q", "subject": "s", "currently_active": False,
+                   "last_detail": _LONG}}
+    v = mini_state_view(_base(rules=rules))
+    assert len(_LONG) > 800
+    assert v["unreadable"] == [] and quiet_ok(v), v["unreadable"]
+    assert v["rules"]["r"]["last_detail"] == _LONG
+
+
+def test_a_long_escalation_detail_is_kept_whole_and_never_merged():
+    from mini_dudeai.brief import recent_escalations
+    rows = _hostile_esc_rows({"detail": _LONG + "A"}) + \
+        _hostile_esc_rows({"detail": _LONG + "B"})
+    esc = recent_escalations(rows, NOW)
+    assert len(esc) == 2 and {e["detail"][-1] for e in esc} == {"A", "B"}
+
+
+def test_a_long_detail_state_reads_quiet_in_the_brief_and_passes_the_audit(tmp_path):
+    from mini_dudeai.audit import PASS, AuditContext, check_liveness
+    from mini_dudeai.brief import build_brief
+    st = _base(rules={"q": {"rule_id": "q", "subject": "s",
+                            "currently_active": False, "last_detail": _LONG}})
+    assert "Quiet" in build_brief(st, [], NOW)
+    r = check_liveness(AuditContext(artifact_dir=tmp_path, now=NOW, state=st))
+    assert r.status == PASS, r
+
+
+# I4: type tokens made distinct garbage ids COLLIDE ([1] vs [2], -1 vs -2),
+# which demoted a live escalation to Resolved. Distinct in, distinct out.
+@pytest.mark.parametrize("a,b", [([1], [2]), (-1, -2), ("p" * 200 + "A", "p" * 200 + "B"),
+                                 ({"a": 1}, {"a": 2}), (10 ** 400, 10 ** 401)],
+                         ids=["list", "neg", "long_str", "dict", "huge_int"])
+def test_distinct_ids_stay_distinct(a, b):
+    from utils.mini_state_view import _ident
+    assert _ident(a) != _ident(b), (_ident(a), _ident(b))
+    hash(_ident(a))
+
+
+def test_a_colliding_garbage_id_never_hides_a_live_escalation():
+    from mini_dudeai.brief import build_brief
+    rules = {"a": {"rule_id": -1, "subject": "s", "currently_active": False}}
+    out = build_brief(_base(rules=rules), _hostile_esc_rows(
+        {"rule": -2, "subject": "s", "detail": "LIVE-OTHER"}), NOW)
+    look = out.split("Look here first")[1] if "Look here first" in out else ""
+    assert "LIVE-OTHER" in look.split("Recently resolved")[0], out
+
+
+# I2: fleet truth classified an unreadable mini block HEALTHY (no consumer of
+# the `unreadable` key). Unreadable = not ok, reason names it UNOBSERVABLE
+# (fleet_truth maps that to DARK — could not see, not a fault).
+@pytest.mark.parametrize("extra", [{"rules": [1]}, {"rules": None, "rule_count": 7},
+                                   {"error_count": float("nan")}, {"host": "a\nb"}],
+                         ids=["rules_list", "count_no_rules", "ec_nan", "host_nl"])
+def test_an_unreadable_mini_block_is_never_healthy_in_fleet_truth(extra):
+    from utils.fleet_truth import HEALTHY, classify_block
+    from utils.status_blocks import mini_block_from_payload
+    b = mini_block_from_payload(_base(**extra), now=NOW)
+    assert b["ok"] is False and "unobservable" in b["reason"], b
+    cell = classify_block(b, source="mini")
+    assert cell["state"] != HEALTHY, cell
+
+
+def test_a_healthy_long_detail_block_stays_healthy_in_fleet_truth():
+    from utils.fleet_truth import HEALTHY, classify_block
+    from utils.status_blocks import mini_block_from_payload
+    st = _base(rules={"r": {**_ACTIVE["r"], "last_detail": _LONG}})
+    b = mini_block_from_payload(st, now=NOW)
+    assert b["ok"] is True and "unreadable" not in b, b
+    assert classify_block(b, source="mini")["state"] == HEALTHY
+    assert b["active_rules"][0]["detail"] == _LONG

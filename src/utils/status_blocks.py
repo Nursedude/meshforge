@@ -178,8 +178,12 @@ def mini_block_from_payload(
         "top_rules_24h": top,
     }
     if view["unreadable"]:
-        # witnessed, never absorbed — the consumer can name the blind part
+        # witnessed AND consumed (r4 I2: the key had no reader, so fleet
+        # truth called a `rules:[1]` box HEALTHY with zero escalations).
+        # Not ok + an UNOBSERVABLE reason = fleet_truth DARK: we could not
+        # see that box's conditions — not a fault, never green.
         block["unreadable"] = list(view["unreadable"])
+        block["ok"] = False
     if no_ts:
         block["reason"] = (
             "no_tick_timestamp: state lacks a finite numeric last_tick_ts — "
@@ -196,6 +200,12 @@ def mini_block_from_payload(
             f"stale: last tick {age_s:.0f}s ago "
             f"(threshold {stale_after_s:.0f}s) — mini-dudeai "
             f"daemon may have crashed"
+        )
+    elif view["unreadable"]:
+        block["reason"] = (
+            "unreadable_state: section(s) "
+            f"{', '.join(view['unreadable'])} could not be read — that box's "
+            "conditions are unobservable (state writer suspect)"
         )
     return block
 

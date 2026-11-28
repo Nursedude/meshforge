@@ -300,10 +300,12 @@ def read_snapshot(
 
     if snap.box is None:
         for payload in (wd_payload, mini_payload):
-            # a str only: `host:5` / NaN would become the answer's box name
-            if isinstance(payload, dict) and isinstance(payload.get("host"), str) \
-                    and payload["host"]:
-                snap.box = payload["host"]
+            # the view's host rule (r4 I3): `host:5`, a newline or 70 chars
+            # became the answer's box name — printable + bounded, else skip
+            from utils.mini_state_view import mini_state_view
+            name = mini_state_view(payload)["host"] if isinstance(payload, dict) else None
+            if name:
+                snap.box = name
                 break
 
     return snap

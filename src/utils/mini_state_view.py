@@ -46,14 +46,18 @@ reader can import it at module top. Byte-identical with MeshAnchor
 """
 from __future__ import annotations
 
+import json
+import zlib
 from typing import Any, Optional
 
 from utils.finite_stamp import finite
 
 
-#: Bounds on what a remote document may make a reader print (r3 N4/N5): a
-#: 309-digit count or a 20 kB error string is not a value, it is a writer
-#: fault. Beyond these the field is REFUSED (and witnessed), never echoed.
+#: Bounds (r3 N4/N5): a count past MAX_COUNT or a host past MAX_HOST is a
+#: writer fault — REFUSED and witnessed. MAX_TEXT only bounds the RENDERED
+#: form of a non-str value and of a source-error name (with a marker); a str
+#: detail is never capped or refused here (r4 I1: the engine writes details
+#: uncapped — 7 of 9 live rules exceeded 200 chars; readers slice to show).
 MAX_COUNT = 10 ** 9
 MAX_TEXT = 200
 MAX_HOST = 64
@@ -67,33 +71,76 @@ def _count(v: Any) -> Optional[int]:
     return int(f)
 
 
+def _bounded_repr(v: Any) -> str:
+    """A non-str value's text, DISTINCT for distinct values (r4 I4: type
+    tokens made `[1]` and `[2]` — and -1 / -2 — the same id, demoting a live
+    escalation to Resolved). Long forms keep head + length, never just a
+    prefix, so two values differing late still differ."""
+    if isinstance(v, int) and not isinstance(v, bool):
+        # str()/repr() of a huge int RAISE past the int-digits limit; bits +
+        # low word are distinct enough and never raise
+        return f"<int:{v.bit_length()}bits:{v & 0xffffffff:08x}>"
+    try:
+        s = json.dumps(v, sort_keys=True, default=_safe_repr)
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        s = _safe_repr(v)
+    if len(s) > MAX_TEXT:
+        # crc32, never hash(): str hashes are salted per process, and this
+        # text lands in the brief (rewritten when content changes)
+        crc = zlib.crc32(s.encode("utf-8", "replace"))
+        s = f"{s[:MAX_TEXT]}…[{len(s)}:{crc:08x}]"
+    return f"<{type(v).__name__}:{s}>"
+
+
+def _safe_repr(v: Any) -> str:
+    try:
+        return repr(v)
+    except Exception:  # noqa: BLE001 — remote junk must never raise here
+        return f"<{type(v).__name__}>"
+
+
 def _ident(v: Any) -> Optional[str]:
     """A rule_id / subject from remote JSON as a hashable, printable str.
 
     P3 r3 I1/I2: a list ``rule_id`` raised ``unhashable`` in the brief's
     last-seen index and the TUI's seen-set — the seam had normalized the
-    top-level fields and left the rows raw. None stays None (absent); a
-    finite number reads as its text; anything else names its type."""
-    if v is None:
-        return None
-    if isinstance(v, str):
-        return v[:MAX_TEXT]
+    top-level fields and left the rows raw. None stays None (absent); a str
+    passes WHOLE (r4: a prefix cap collided "p"*200+"A" with "…B"); an int
+    reads as its text; anything else is a bounded, distinct repr."""
+    if v is None or isinstance(v, str):
+        return v
     if isinstance(v, bool):
         return str(v)
-    if isinstance(v, int) and _count(v) is not None:
+    if isinstance(v, int) and abs(v) <= MAX_COUNT:
         return str(v)
     if isinstance(v, float) and finite(v) is not None:
         return repr(v)
-    return f"<{type(v).__name__}>"
+    return _bounded_repr(v)
 
 
 def _text(v: Any) -> str:
-    """Free text (detail / note) capped; a non-str renders as its str."""
+    """Free text (detail / note). A str passes WHOLE — the engine writes
+    details uncapped and readers slice for display (r4 I1: a 200-char cap
+    here flagged 7 of 9 LIVE rules unreadable and cut every TUI detail).
+    A non-str renders as bounded text."""
     if v is None:
         return ""
-    s = v if isinstance(v, str) else str(v) if isinstance(v, (int, float, bool)) \
-        else f"<{type(v).__name__}>"
-    return s[:MAX_TEXT]
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, int) and abs(v) <= MAX_COUNT:
+        return str(v)
+    if isinstance(v, float) and finite(v) is not None:
+        return repr(v)
+    return _bounded_repr(v)
+
+
+def _error_name(v: Any) -> str:
+    """One source-error name for a head line: bounded WITH a marker (r3 N4:
+    a 20 kB item printed whole). Not a refusal — the name is still read."""
+    s = _text(v) if v is not None else "<None>"
+    return s if len(s) <= MAX_TEXT else f"{s[:MAX_TEXT]}…[{len(s)} chars]"
 
 
 def rule_row(raw: Any) -> tuple:
@@ -182,7 +229,7 @@ def mini_state_view(state: Any) -> dict:
     source_errors_unreadable = raw_se is not None and not isinstance(raw_se, list)
     if isinstance(raw_se, list):
         for item in raw_se:
-            source_errors.append(_text(item) if item is not None else "<None>")
+            source_errors.append(_error_name(item))
 
     # A host is a LABEL rendered in titles and answers (r3 N5: a newline +
     # markdown in `host` became the brief title and the oracle's prefix):
