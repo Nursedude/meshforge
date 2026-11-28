@@ -18,7 +18,17 @@ import json
 import os
 import re
 
+from utils.finite_stamp import finite
+from utils.mini_state_view import (errors_label, history_view, mini_state_view,
+                                   unreadable_note)
+
 from ._util import APP_MINI_UNIT, atomic_write_text, read_json
+
+
+def _hk(v):
+    """A dict-key-safe form of a remote id (a list ``rule_id`` raised
+    TypeError: unhashable — P3 seam). Scalars pass through unchanged."""
+    return v if isinstance(v, (str, int, float, type(None))) else repr(v)
 
 DEFAULT_STALE_S = 300.0  # 30s tick → >5m means the daemon likely stopped
 ESCALATION_WINDOW_S = 86400.0  # only surface escalations fired in the last 24h
@@ -36,8 +46,15 @@ def _escalation_of(h: dict) -> dict | None:
     schema wrote it at ``outcome.escalation``. Read both so neither shape is
     silently dropped from the warm-start brief.
     """
-    out = h.get("outcome") or {}
-    return (out.get("extras") or {}).get("escalation") or out.get("escalation")
+    # remote rows (P3 seam): a non-object outcome / extras / payload is no
+    # escalation, never an AttributeError out of the brief or the deep feed
+    out = h.get("outcome") if isinstance(h, dict) else None
+    if not isinstance(out, dict):
+        return None
+    extras = out.get("extras")
+    esc = (extras.get("escalation") if isinstance(extras, dict) else None) \
+        or out.get("escalation")
+    return esc if isinstance(esc, dict) else None
 
 
 def recent_escalations(history: list[dict], now_ts: float,
@@ -58,12 +75,16 @@ def recent_escalations(history: list[dict], now_ts: float,
     """
     cutoff = now_ts - window_s
     fresh: dict = {}
+    # Through the seam (P3, 11-27): a ts of "x" / 10**400 / [1] raised here
+    # and NaN silently dropped the row (NaN < cutoff is False, then sorted
+    # anywhere). Unreadable = untimed = KEPT, like an absent ts always was.
+    history, _bad_ts, _dropped = history_view(history)
     for h in history:
         esc = _escalation_of(h)
         if not esc:
             continue
-        ts = h.get("ts")
-        if ts is not None and float(ts) < cutoff:
+        ts = h["ts"]
+        if ts is not None and ts < cutoff:
             continue
         # Carry the row's transition on a copy (never mutate history): the
         # engine replays the escalation payload on the CLEAR row too, and an
@@ -71,11 +92,12 @@ def recent_escalations(history: list[dict], now_ts: float,
         # activity split needs when the rule has aged out of the state file.
         esc = dict(esc)
         esc["_transition"] = h.get("transition")
-        key = (esc.get("rule"), esc.get("subject"), str(esc.get("detail", "")))
+        key = (_hk(esc.get("rule")), _hk(esc.get("subject")),
+               str(esc.get("detail", "")))
         prev = fresh.get(key)
-        if prev is None or float(ts or 0) >= float(prev[0] or 0):
+        if prev is None or (ts or 0) >= (prev[0] or 0):
             fresh[key] = (ts, esc)
-    ordered = sorted(fresh.values(), key=lambda x: float(x[0] or 0))
+    ordered = sorted(fresh.values(), key=lambda x: x[0] or 0)
     if with_ts:
         return ordered
     return [esc for _ts, esc in ordered]
@@ -124,15 +146,15 @@ def _split_escalations_by_activity(escalations: list, rules: dict) -> tuple:
     row is the engine's own observation — as strong as currently_active=False.
     """
     status = {}
-    for rs in rules.values():
+    for rs in (rules.values() if isinstance(rules, dict) else ()):
         if isinstance(rs, dict) and rs.get("currently_active") is not None:
-            status[(rs.get("rule_id"), rs.get("subject"))] = bool(
+            status[(_hk(rs.get("rule_id")), _hk(rs.get("subject")))] = bool(
                 rs["currently_active"])
     active, resolved = [], []
     for esc in escalations:
         if esc.get("_transition") == "edge_down":
             resolved.append(esc)
-        elif status.get((esc.get("rule"), esc.get("subject")), True):
+        elif status.get((_hk(esc.get("rule")), _hk(esc.get("subject"))), True):
             active.append(esc)
         else:
             resolved.append(esc)
@@ -140,9 +162,10 @@ def _split_escalations_by_activity(escalations: list, rules: dict) -> tuple:
 
 
 def _age(now_ts: float, ts: float | None) -> str:
+    ts = finite(ts)
     if not ts:
         return "?"
-    s = max(0, int(now_ts - float(ts)))
+    s = max(0, int(now_ts - ts))
     if s < 90:
         return f"{s}s"
     if s < 5400:
@@ -226,15 +249,17 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     section so a returning frontier session cannot miss that the cadence ran
     degraded — tier provenance in the reader's face, never buried (#80).
     """
-    state = state if isinstance(state, dict) else {}
-    rules = state.get("rules") or {}
-    # finite(), never float() (P3 r1): NaN / inf / 10**400 raised here and in
-    # _age, so the daemon wrote NO brief at all. Not a finite time = no tick.
-    from utils.finite_stamp import finite
-    last_tick = finite(state.get("last_tick_ts"))
+    # ONE reader of the state doc (P3 seam, 11-27): r1 + r2 each found the
+    # next unguarded field — source_errors [1]/[null]/5 raised the join,
+    # error_count NaN rendered "src_errors=nan", a present non-finite tick
+    # read "never ticked". The view types every field; readers never .get().
+    view = mini_state_view(state)
+    rules = view["rules"]
+    last_tick = view["last_tick"]
     age = _age(now_ts, last_tick)
     stale = bool(last_tick and (now_ts - last_tick) > stale_s)
-    host = state.get("host", "?")
+    host = view["host"] or "?"
+    history, _bad_ts, _dropped = history_view(history)
 
     stamp = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
     # No "last tick Ns ago" here: that claim is only true at WRITE time, and
@@ -253,16 +278,24 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     ]
 
     # Posture
-    if not last_tick:
+    if not view["tick_present"]:
         lines.append("⚠️ **mini-dudeai has no state yet** (never ticked here, or state file missing).")
+    elif last_tick is None:
+        lines.append("⚠️ **freshness UNKNOWN** — the state carries a last_tick_ts "
+                     "that is not a finite time (state writer suspect): "
+                     f"`systemctl --user status {APP_MINI_UNIT}`.")
     elif stale:
         lines.append(f"🔴 **STALE** — last tick {age} ago (> {int(stale_s)}s). The watcher itself "
                      f"may be down: `systemctl --user status {APP_MINI_UNIT}`.")
     else:
-        err_names = "; ".join(state.get("source_errors") or [])
-        lines.append(f"🟢 alive — {state.get('rule_count', len(rules))} rules, "
-                     f"src_errors={state.get('error_count', 0)} this tick."
+        err_names = "; ".join(view["source_errors"])
+        lines.append(f"🟢 alive — {view['rule_count']} rules, "
+                     f"src_errors={errors_label(view)} this tick."
                      + (f" ({err_names})" if err_names else ""))
+    if view["unreadable"]:
+        # any posture branch: a refused section is never absorbed (P3 seam)
+        lines.append(f"⚠️ state section(s) refused{unreadable_note(view)} — "
+                     "conditions in them cannot be shown; state writer suspect.")
     # The END, above every instrument section (2026-09-03 audit).
     lines.append(end_line(delivery, delivery_err, now_ts))
 
@@ -280,7 +313,9 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     pending_sends = [
         (rs, ent)
         for rs in rules.values() if isinstance(rs, dict)
-        for ent in (rs.get("pending_sends") or []) if isinstance(ent, dict)
+        for ent in (rs.get("pending_sends")
+                    if isinstance(rs.get("pending_sends"), list) else [])
+        if isinstance(ent, dict)
     ]
     if pending_sends:
         lines.append(f"\n## 📨 {len(pending_sends)} undelivered send(s) — retrying each tick")
@@ -489,7 +524,7 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
                          f"{h.get('subject')} · {str(h.get('detail',''))[:90]}")
 
     if (not active and not escalations and not ups and not pending_deltas
-            and last_tick and not stale):
+            and last_tick and not stale and not view["unreadable"]):
         lines.append("\n_Quiet: no active conditions, no escalations, no fires in window. "
                      "Nothing demands attention._")
 

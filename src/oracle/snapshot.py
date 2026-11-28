@@ -129,6 +129,8 @@ class NocSnapshot:
     mini_stale: bool = False
     mini_active: List[Dict[str, Any]] = field(default_factory=list)
     mini_error_count: Optional[int] = None
+    mini_errors_unknown: bool = False
+    mini_unreadable: List[str] = field(default_factory=list)
     mini_reason: Optional[str] = None
 
     # fleet posture (optional; from an injected /api/status dict)
@@ -192,27 +194,32 @@ def _fill_mini(snap: NocSnapshot, path: Path) -> Optional[dict]:
         if existed:
             snap.mini_ok = False
         return None
-    # finite(), never isinstance (P3 r1): NaN / inf -> mini_ok True age 0;
-    # 10**400 raised. Not a finite time = freshness unobservable = not ok.
-    from utils.finite_stamp import finite
-    ts = finite(payload.get("last_tick_ts"))
+    # The ONE state reader (P3 seam, 11-27): `rules:[1]` raised here, an
+    # error_count of NaN echoed into the answer. Not a finite tick =
+    # freshness unobservable = not ok (P3 r1).
+    from utils.mini_state_view import mini_state_view
+    view = mini_state_view(payload)
+    ts = view["last_tick"]
     age = max(0.0, snap.now - ts) if ts is not None else None
     stale = bool(age is not None and age > MINI_STALE_S)
-    rules = payload.get("rules") or {}
     active = [
         {
             "rule_id": rs.get("rule_id"),
             "subject": rs.get("subject"),
             "detail": rs.get("last_detail", ""),
         }
-        for rs in rules.values()
-        if isinstance(rs, dict) and rs.get("currently_active")
+        for rs in view["rules"].values()
+        if rs.get("currently_active")
     ]
     snap.mini_installed = True
     snap.mini_age_s = age
     snap.mini_stale = stale
     snap.mini_active = active
-    snap.mini_error_count = payload.get("error_count")
+    snap.mini_error_count = view["error_count"]
+    # present-but-unreadable count = UNKNOWN; the answer must say so
+    snap.mini_errors_unknown = view["error_count"] is None
+    # present fields refused (rules:[1] …): the answer must never read quiet
+    snap.mini_unreadable = list(view["unreadable"])
     snap.mini_ok = not stale and age is not None
     if age is None:
         snap.mini_reason = ("no finite last_tick_ts — freshness unobservable, "
@@ -290,7 +297,9 @@ def read_snapshot(
 
     if snap.box is None:
         for payload in (wd_payload, mini_payload):
-            if isinstance(payload, dict) and payload.get("host"):
+            # a str only: `host:5` / NaN would become the answer's box name
+            if isinstance(payload, dict) and isinstance(payload.get("host"), str) \
+                    and payload["host"]:
                 snap.box = payload["host"]
                 break
 

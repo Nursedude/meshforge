@@ -242,6 +242,12 @@ def _mini_short(snap: NocSnapshot) -> str:
         # absent, corrupt file) but this renderer never read mini_ok, so the
         # answer said "mini:0act" — healthy-shaped from a reading nobody took.
         return "mini:?tick"
+    if snap.mini_errors_unknown:
+        # error count present but unreadable (P3 seam): never "0act"
+        return "mini:err?"
+    if snap.mini_unreadable:
+        # a refused state section (rules:[1] …): its conditions are unseen
+        return "mini:?state"
     if snap.mini_error_count:
         return f"mini:err{snap.mini_error_count}"
     return f"mini:{len(snap.mini_active)}act"
@@ -257,6 +263,11 @@ def _blind_notes(snap: NocSnapshot) -> List[str]:
         notes.append(f"mini stale{_age(snap.mini_age_s)}")
     elif snap.mini_installed and snap.mini_ok is False:
         notes.append("mini tick unreadable")   # never "all quiet" (P3 r2)
+    if snap.mini_installed and snap.mini_errors_unknown:
+        notes.append("mini src-errors unreadable")   # P3 seam: never quiet
+    unread = [f for f in snap.mini_unreadable if f != "error_count"]
+    if snap.mini_installed and unread:
+        notes.append("mini state unreadable: " + ",".join(unread))
     return notes
 
 

@@ -206,10 +206,12 @@ def check_liveness(ctx: AuditContext) -> CheckResult:
             {"state_error": ctx.state_error},
         )
     raw = ctx.state.get("last_tick_ts")
-    # finite(), never isinstance (P3 r1): NaN passed it -> PASS "ticking — last
-    # tick nans ago"; 10**400 raised; bool read as 1970.
-    from utils.finite_stamp import finite
-    last = finite(raw)
+    # The ONE state reader (P3 seam, 11-27): NaN passed an isinstance gate ->
+    # PASS "ticking — last tick nans ago" (r1); error_count / fire_count NaN
+    # were echoed into the JSON report (NaN is not JSON, r2).
+    from utils.mini_state_view import errors_label, mini_state_view
+    view = mini_state_view(ctx.state)
+    last = view["last_tick"]
     if last is None:
         return CheckResult(
             "liveness", DEGRADED,
@@ -223,8 +225,8 @@ def check_liveness(ctx: AuditContext) -> CheckResult:
     common = {
         "age_s": round(age, 1),
         "freshness_s": ctx.freshness_s,
-        "fire_count": ctx.state.get("fire_count"),
-        "error_count": ctx.state.get("error_count"),
+        "fire_count": view["fire_count"],
+        "error_count": view["error_count"],
     }
     if age > ctx.freshness_s:
         return CheckResult(
@@ -242,7 +244,7 @@ def check_liveness(ctx: AuditContext) -> CheckResult:
     return CheckResult(
         "liveness", PASS,
         f"ticking — last tick {age:.0f}s ago, "
-        f"fire_count={common['fire_count']} error_count={common['error_count']}.",
+        f"fire_count={common['fire_count']} error_count={errors_label(view)}.",
         common,
     )
 
@@ -294,7 +296,11 @@ def check_outcome_truth(ctx: AuditContext) -> CheckResult:
         else:
             unknown += 1
     data = {"window": len(recent), "ok": ok, "err": err, "unknown": unknown}
-    state_err = (ctx.state or {}).get("error_count")
+    # through the ONE state reader (P3 seam): `True` passed isinstance(int)
+    from utils.mini_state_view import mini_state_view
+    state_err = (mini_state_view(ctx.state)["error_count"]
+                 if isinstance(ctx.state, dict) and "error_count" in ctx.state
+                 else None)
     if isinstance(state_err, int):
         data["state_error_count"] = state_err
     if recent and err == len(recent):

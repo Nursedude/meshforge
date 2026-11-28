@@ -24,7 +24,7 @@ import datetime
 import json
 import os
 
-from utils.finite_stamp import finite  # the ONE stamp rule (P3, 11-27)
+from utils.mini_state_view import mini_state_view  # the ONE state reader (P3 seam)
 
 from ._util import (APP_FLEET_PRESET, APP_MINI_UNIT, APP_REPO_DEFAULT,
                     APP_REPO_ENV, READ_JSON_NOT_FOUND, operator_home,
@@ -376,15 +376,12 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
 
     brief = _read_text(brief_path)
     state, _ = read_json(state_path)
-    last_tick: float | None = None
-    tick_present = False
-    if isinstance(state, dict):
-        lt = state.get("last_tick_ts")
-        if lt:
-            tick_present = True
-            # finite(), never float() (P3, 11-27): NaN / inf / 10**400 RAISED
-            # in the age formatter — no banner at all at session start.
-            last_tick = finite(lt)
+    # The ONE state reader (P3 seam, 11-27) — the pane, brief, TUI, oracle
+    # and audit judge the same document by the same rule. NaN / inf /
+    # 10**400 RAISED in the age formatter (no banner at session start).
+    view = mini_state_view(state)
+    tick_present = view["tick_present"]
+    last_tick: float | None = view["last_tick"]
 
     # Nothing here at all → stay silent (don't inject noise on a mini-less box)
     # — EXCEPT an overdue backlog, which is the operator's, not mini's, and must

@@ -100,8 +100,10 @@ def build_findings(state: dict, history: list, now_ts: float) -> list:
 
     findings = []
     seen = set()
-    for rs in (state.get("rules") or {}).values():
-        if not isinstance(rs, dict) or not rs.get("currently_active"):
+    # the ONE state reader (P3 seam): `rules:5` / `[1]` raised the screen
+    from utils.mini_state_view import mini_state_view
+    for rs in mini_state_view(state)["rules"].values():
+        if not rs.get("currently_active"):
             continue
         rid, subj = rs.get("rule_id"), rs.get("subject")
         seen.add((rid, subj))
@@ -160,22 +162,29 @@ STALE_AFTER_S = 300
 
 
 def _is_fresh(state: dict, now_ts: float) -> bool:
-    # finite(), never float() (P3 r1): +inf read fresh; 10**400 raised
-    from utils.finite_stamp import finite
-    last_tick = finite(state.get("last_tick_ts"))
+    # through the ONE state reader (P3 seam): +inf read fresh; 10**400 raised
+    from utils.mini_state_view import mini_state_view
+    last_tick = mini_state_view(state)["last_tick"]
     return last_tick is not None and (now_ts - last_tick) <= STALE_AFTER_S
 
 
 def _posture(state: dict, now_ts: float) -> str:
-    last_tick = state.get("last_tick_ts")
-    rule_count = state.get("rule_count", len(state.get("rules") or {}))
-    errs = state.get("error_count", 0)
-    if not last_tick:
+    # ONE reader of the state doc (P3 seam, 11-27): `rules:5` raised the
+    # screen, error_count NaN rendered "src_errors=nan" under 🟢 alive.
+    # A refused section is named on every branch (fold: `rules:[1]` read
+    # "🟢 alive — 0 rules … Nothing actionable ✓").
+    from utils.mini_state_view import mini_state_view, unreadable_note
+    v = mini_state_view(state)
+    return _posture_head(v, now_ts) + unreadable_note(v)
+
+
+def _posture_head(v: dict, now_ts: float) -> str:
+    from utils.mini_state_view import errors_label
+    rule_count = v["rule_count"]
+    errs = errors_label(v)
+    if not v["tick_present"]:
         return "⚠️ mini-dudeai has no state here (never ticked, or file missing)."
-    # finite(), never float() (P3 r1): NaN / +inf read "🟢 alive … last tick
-    # 0s ago" while _is_fresh said False; 10**400 raised the screen.
-    from utils.finite_stamp import finite
-    t = finite(last_tick)
+    t = v["last_tick"]
     if t is None:
         return ("⚠️ FRESHNESS UNKNOWN — last_tick_ts is not a finite time; the "
                 "watcher's state writer is suspect: systemctl --user status "
@@ -221,11 +230,21 @@ class MiniDudeaiHandler(BaseHandler):
                 # An empty list from a watcher that is not ticking — or ticked
                 # blind — is not a clean bill (TUI audit finding 5): the ✓ used
                 # to show under a 🔴 STALE header.
-                errs = state.get("error_count", 0) or 0
+                from utils.mini_state_view import mini_state_view
+                view = mini_state_view(state)
+                errs = view["error_count"]
                 if not _is_fresh(state, now):
                     verdict = ("No findings to show — but the watcher is NOT "
                                "fresh, so this is NOT a clean bill of health "
                                "(unobservable ≠ healthy).")
+                elif view["unreadable"]:
+                    verdict = ("No findings shown — but part of the state "
+                               "could not be read ("
+                               + ", ".join(view["unreadable"])
+                               + "): NOT a clean bill.")
+                elif errs is None:
+                    verdict = ("No findings — but this tick's source-error "
+                               "count is unreadable: NOT a clean bill.")
                 elif errs:
                     verdict = (f"No findings — but {errs} source error(s) this "
                                f"tick: partly blind, not a clean bill.")

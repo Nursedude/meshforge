@@ -37,6 +37,9 @@ import sys
 import time
 
 from utils.finite_stamp import finite  # the ONE stamp rule (P3, 11-27)
+# the ONE reader of a mini state doc + history rows (P3 seam, 11-27)
+from utils.mini_state_view import (errors_label, history_view, mini_state_view,
+                                   unreadable_note)
 
 from ._util import (APP_HISTORY_RELPATH, APP_STATE_RELPATH,
                     app_for_state_relpath, app_state_candidate_paths,
@@ -183,21 +186,20 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
     a dead dudeclaw-02 invisible in this pane). ``claw`` stays as the primary
     for back-compat with callers that pass/read a single tick.
     """
-    state = state if isinstance(state, dict) else {}
-    raw_tick = state.get("last_tick_ts")
-    # finite(), never float() (P3): NaN / inf / 10**400 RAISED out of the
-    # whole pane (the age formatter); bool read as 1970. Present-but-not-a-
-    # time is its own status: the box answered, its freshness UNOBSERVABLE.
-    last_tick = finite(raw_tick)
-    # remote state: a non-object `rules` ([1]) raised out of the whole pane
-    rules = state.get("rules") if isinstance(state.get("rules"), dict) else {}
+    # ONE reader of remote mini state (P3 seam, 11-27): every field through
+    # utils.mini_state_view — r1 + r2 each found the NEXT unguarded field
+    # (rules:[1], source_errors:[null], error_count:NaN, host:5) raising the
+    # whole pane. Present-but-not-a-time tick = `unknown` (freshness
+    # UNOBSERVABLE); an unreadable error count renders `?`, never 0.
+    v = mini_state_view(state)
+    last_tick = v["last_tick"]
     active = [
         {"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
          "detail": str(rs.get("last_detail", ""))[:100]}
-        for rs in rules.values()
-        if isinstance(rs, dict) and rs.get("currently_active")
+        for rs in v["rules"].values()
+        if rs.get("currently_active")
     ]
-    if not raw_tick:
+    if not v["tick_present"]:
         status = "no_state"
     elif last_tick is None:
         status = "unknown"
@@ -213,14 +215,17 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
         "status": status,
         "last_tick_ts": last_tick,
         "age": _age(now_ts, last_tick) if last_tick else "?",
-        "rule_count": state.get("rule_count", len(rules)),
-        "src_errors": state.get("error_count", 0),
-        "source_errors": state.get("source_errors") or [],
+        "rule_count": v["rule_count"],
+        # None = present but unreadable = UNKNOWN (rendered `?`, never 0)
+        "src_errors": v["error_count"],
+        "source_errors": v["source_errors"],
         # None (not 0) when absent — a pre-upgrade daemon's state simply
         # doesn't carry the count, and unknown must never read as zero.
-        "pending_deltas": state.get("pending_deltas"),
+        "pending_deltas": v["pending_deltas"],
         "active": active,
-        "state_host": state.get("host"),
+        "state_host": v["host"],
+        # present fields the view refused — rendered, never absorbed
+        "unreadable": v["unreadable"],
         "claw": cards[0] if cards else None,
         "claws": cards,
     }
@@ -324,6 +329,11 @@ def _split_src_tag(state_text: str) -> tuple[str | None, str]:
         return None, txt
     line, _, rest = txt.partition("\n")
     return (line[len(_SRC_TAG):].strip() or None), rest.strip()
+
+
+def _errs(p: dict) -> str:
+    """A posture's src_errors text — ``?`` when the count is UNKNOWN."""
+    return errors_label({"error_count": p.get("src_errors")})
 
 
 def _no_state_error() -> str:
@@ -529,7 +539,7 @@ def collect_local(now_ts: float, state_path: str | None = None,
         posture["error"] = f"state unreadable: {err}"
         posture["sdr"] = sdr
         return posture
-    label = (state.get("host") if isinstance(state, dict) else None) or "self"
+    label = mini_state_view(state)["host"] or "self"
     posture = _tag_foreign_app(
         parse_state_posture(label, state, now_ts, stale_s,
                             self_box=True, claws=claw_docs), src)
@@ -733,7 +743,7 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
     uplink_line = _render_uplink()
     if uplink_line:
         lines.extend([uplink_line, ""])
-    ordered = sorted(postures, key=lambda p: (_ORDER.get(p["status"], 9), p["host"]))
+    ordered = sorted(postures, key=lambda p: (_ORDER.get(p["status"], 9), str(p["host"])))
     for p in ordered:
         banner = _BANNER.get(p["status"], "?")
         tag = " (self)" if p.get("self_box") else ""
@@ -768,18 +778,19 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
             head = (f"{banner} **{p['host']}**{tag} — freshness UNKNOWN "
                     f"(last_tick_ts is not a finite time — state writer "
                     f"suspect) · {p['rule_count']} rules · "
-                    f"src_errors={p['src_errors']}")
+                    f"src_errors={_errs(p)}")
         else:
             head = (f"{banner} **{p['host']}**{tag} — {p['status']} · "
                     f"last tick {p['age']} ago · {p['rule_count']} rules · "
-                    f"src_errors={p['src_errors']}")
+                    f"src_errors={_errs(p)}")
         # Whose daemon answered. Absent = this app's own; a peer app's mini is
         # named, so a healthy foreign box reads as healthy-and-foreign rather
         # than as one of ours (or, before today, as absent).
         if p.get("state_app"):
             head += f" · 🔀 {p['state_app']} mini"
-        if p["src_errors"] and p.get("source_errors"):
-            head += f" ({'; '.join(p['source_errors'])})"
+        if p.get("src_errors") != 0 and p.get("source_errors"):
+            head += f" ({'; '.join(str(e) for e in p['source_errors'])})"
+        head += unreadable_note(p)
         pd = p.get("pending_deltas")
         if isinstance(pd, int) and pd > 0:
             head += f" · 💭 {pd} delta(s) pending"
@@ -880,6 +891,12 @@ def build_box_deep(host: str, state: dict, history: list[dict], now_ts: float,
     Reuses brief.recent_escalations (with_ts) so the deep feed and the per-box
     brief never disagree on what's an escalation."""
     posture = parse_state_posture(host, state, now_ts, stale_s, self_box)
+    # Through the seam (P3, 11-27): history `ts` "x" / 10**400 / [1] raised
+    # the deep feed's filter + sort; a non-object row raised `.get`. Untimed
+    # rows are KEPT (an escalation is never hidden by a torn stamp) and
+    # COUNTED so the feed can say how many it could not place in time.
+    history, bad_ts, dropped = history_view(history)
+    posture["history_unreadable"] = bad_ts + dropped
     # `unknown` cannot vouch the box is live either (P3)
     stale = posture["status"] in ("stale", "unknown")
     # Mark each escalation with whether its (rule, subject) is STILL active on
@@ -890,7 +907,7 @@ def build_box_deep(host: str, state: dict, history: list[dict], now_ts: float,
     # 2026-08-11: a fix applied to one instance is not applied to the class).
     # Conservative in the same direction: unknown pairs stay ACTIVE, so a live
     # escalation is never hidden by state drift.
-    _rules = state.get("rules") or {}
+    _rules = mini_state_view(state)["rules"]
     posture["escalations"] = [
         {"ts": ts, "box": host, "stale": stale, "esc": esc,
          "resolved": bool(_split_escalations_by_activity([esc], _rules)[1])}
@@ -905,7 +922,7 @@ def build_box_deep(host: str, state: dict, history: list[dict], now_ts: float,
          "iso": str(h.get("iso", ""))[:19], "rule_id": h.get("rule_id"),
          "subject": h.get("subject"), "detail": str(h.get("detail", ""))[:90]}
         for h in history
-        if h.get("transition") == "edge_up" and float(h.get("ts") or 0) >= cutoff
+        if h.get("transition") == "edge_up" and (h["ts"] or 0) >= cutoff
     ]
     return posture
 
@@ -951,7 +968,7 @@ def collect_local_deep(now_ts: float, state_path: str | None = None,
             history = _parse_history_lines(f.read())
     except OSError:
         history = []
-    label = (state.get("host") if isinstance(state, dict) else None) or "self"
+    label = mini_state_view(state)["host"] or "self"
     return _tag_foreign_app(
         build_box_deep(label, state, history, now_ts, stale_s, window_s,
                        self_box=True), src)
@@ -981,8 +998,11 @@ def build_deep_feed(results: list[dict], now_ts: float) -> str:
     stamp = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
     all_esc = [e for r in results for e in r.get("escalations", [])]
     all_fires = [f for r in results for f in r.get("fires", [])]
-    all_esc.sort(key=lambda e: float(e.get("ts") or 0), reverse=True)
-    all_fires.sort(key=lambda f: float(f.get("ts") or 0), reverse=True)
+    # finite() at the sort too: a hand-built result (tests, a future leg)
+    # need not have come through history_view (P3 seam)
+    all_esc.sort(key=lambda e: finite(e.get("ts")) or 0, reverse=True)
+    all_fires.sort(key=lambda f: finite(f.get("ts")) or 0, reverse=True)
+    n_untimed = sum(r.get("history_unreadable") or 0 for r in results)
     # Boxes whose state was READ contribute (their fires carry the stale tag);
     # `unknown` (tick not a finite time) was read too — it listed as skipped
     # while its fires rendered above (P3 r1).
@@ -994,6 +1014,14 @@ def build_deep_feed(results: list[dict], now_ts: float) -> str:
         f"# mini-dudeai fleet deep feed — {len(contributing)} boxes reporting",
         f"_merged {stamp} · {len(all_esc)} escalations · {len(all_fires)} fires "
         f"(24h window, newest first)_",
+    ]
+    if n_untimed:
+        # the witness for rows the seam could not place in time (hfm #9):
+        # kept untimed (never hidden), counted here so the reader knows
+        lines.append(f"_⚠️ {n_untimed} history row(s) with an unreadable "
+                     f"stamp or shape — escalations kept untimed, fires "
+                     f"outside the window_")
+    lines += [
         "",
         "## 🔎 Fleet escalations (look here first)",
     ]

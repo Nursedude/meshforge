@@ -96,6 +96,11 @@ BYTE_IDENTICAL = (
     # The ONE finite-stamp rule for remote JSON (spool-stamp seam 11-26):
     # read_spool, fleet_truth and the collectors judge a peer's stamps by it.
     "src/utils/finite_stamp.py",
+    # The ONE mini state reader (P3 seam 11-27): the shared brief / warm-start
+    # / audit (and MF's pane, TUI, oracle) judge a box's state doc by it.
+    # Twins that drift = one box's state read two ways. Stdlib + finite_stamp.
+    "src/utils/mini_state_view.py",
+    "tests/test_mini_state_view.py",
     # The review-provenance gate (pre-push upshift-witness, 2026-11-19). MF's
     # 11-18 `_non_attached` fix never reached MeshAnchor, so MA's leg 2 read
     # "non-author Fable subagent" as a DENIAL and refused a true row — a day
