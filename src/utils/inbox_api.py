@@ -809,6 +809,18 @@ def _send_stamp(own: Dict[str, Any], dest_num: Optional[int]) -> Optional[int]:
     return so if so is not None and so == dest_num else None
 
 
+def _guarded_send_stamp(resolve, dest_num: Optional[int]) -> Optional[int]:
+    """Slice-2 r7 nit 8: the stamp is computed AFTER the transmit -- a fault
+    here must never cost the send's record. A fault = no stamp (unknown:
+    the header-only rule, never "delivered"), logged."""
+    try:
+        return _send_stamp(resolve(), dest_num)
+    except Exception as e:
+        logger.warning("own-id stamp skipped for a sent DM (%s); row kept, origin unknown",
+                       type(e).__name__)
+        return None
+
+
 def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     """Transmit a validated Meshtastic message and record it. Returns (HTTP status, body)."""
     from gateway.meshtastic_protobuf_client import send_text_direct_with_id
@@ -831,7 +843,7 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     rec = messaging.store_outgoing(
         content=params["text"], network="meshtastic", to_id=params["to_id"],
         channel=params["channel"], delivered=handed_off, packet_id=packet_id,
-        own_id=_send_stamp(resolve_own(), params["dest_num"])
+        own_id=_guarded_send_stamp(resolve_own, params["dest_num"])
         if params["to_id"] is not None else None)
     body = {
         "state": "handed_off" if handed_off else "not_sent",

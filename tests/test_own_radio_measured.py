@@ -205,3 +205,67 @@ class TestMapTaggingKeepsItsFallback:
 
     def test_nothing_at_all_is_none(self):
         assert self._collector()._own_node_id(SimpleNamespace(myInfo=None, localNode=None)) is None
+
+
+def _clock(monkeypatch, wall, mono):
+    monkeypatch.setattr(orad, "time", SimpleNamespace(time=lambda: wall, monotonic=lambda: mono))
+
+
+def _stamped(monkeypatch, tmp_path, dest, *, sent=0x1234ABCD):
+    from commands import messaging as mm
+    from utils import inbox_api
+    import gateway.meshtastic_protobuf_client as pc
+    monkeypatch.setattr(mm, "_get_db_path", lambda: tmp_path / "messages.db")
+    monkeypatch.setattr(pc, "send_text_direct_with_id", lambda **kw: sent)
+    params, err = inbox_api.validate_send({"network": "meshtastic", "text": "x", "destination": dest})
+    assert err is None
+    status, body = inbox_api.send(params)
+    assert status == 200, body
+    conn = mm._init_db()
+    try:
+        return [r[0] for r in conn.execute("SELECT own_id FROM dm_origin").fetchall()]
+    finally:
+        conn.close()
+
+
+class TestReviewR7:
+    """Fable r7 (11-28): resolve_own's config-match branch had its own
+    wall-only freshness copy -- one rule now (fresh_own_node)."""
+
+    OLD, NEW = 0x11112222, 0x33334444
+
+    @pytest.mark.parametrize("configured", [None, OLD])
+    def test_f1_backward_step_never_stamps_through_send(self, monkeypatch, tmp_path, configured):
+        import time as _real
+        tcp = pytest.importorskip("meshtastic.tcp_interface")
+        from utils._map_collector_meshtastic import MeshtasticDataCollectorMixin as M
+        iface = tcp.TCPInterface("localhost", connectNow=False, noProto=True)   # no socket
+        iface.myInfo = SimpleNamespace(my_node_num=self.OLD)
+        w0, m0 = _real.time(), 5000.0
+        _clock(monkeypatch, w0, m0)
+        M._own_node_id(M.__new__(M), iface)                  # the one production writer
+        assert orad.own_node() == self.OLD
+        if configured is not None:
+            _cfg(monkeypatch, configured)
+        _clock(monkeypatch, w0 + 1800, m0 + 5 * 3600)       # true age 5 h, wall shows 30 min
+        assert orad.fresh_own_node() is None
+        assert orad.resolve_own()["num"] is None
+        assert _stamped(monkeypatch, tmp_path, f"!{self.NEW:08x}") == []
+
+    def test_f1_matching_config_still_stamps_while_fresh(self, monkeypatch):
+        """Control: both clocks fresh + matching config = the connection's id."""
+        _clock(monkeypatch, NOW, 5000.0)
+        orad.note_own_node(self.OLD, source="map collector connection (my_node_num)")
+        _cfg(monkeypatch, self.OLD)
+        _clock(monkeypatch, NOW + 60, 5060.0)
+        own = orad.resolve_own()
+        assert own["num"] == self.OLD and "matching the configured id" in own["source"]
+
+    def test_nit8_a_stamp_fault_never_costs_the_send_record(self, monkeypatch, tmp_path, caplog):
+        def boom(*a, **k):
+            raise RuntimeError("resolver fault")
+        monkeypatch.setattr(orad, "resolve_own", boom)
+        with caplog.at_level("WARNING"):
+            got = _stamped(monkeypatch, tmp_path, f"!{self.NEW:08x}")
+        assert got == []                                    # unknown, never a stamp
+        assert any("stamp skipped" in r.getMessage() for r in caplog.records)

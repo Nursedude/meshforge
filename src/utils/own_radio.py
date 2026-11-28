@@ -120,6 +120,10 @@ def own_node_status(now: Optional[float] = None) -> Dict[str, Any]:
     t = time.time() if now is None else now
     with _LOCK:
         mine = dict(_OWN) if _OWN is not None else None
+    return _status_of(mine, t)
+
+
+def _status_of(mine: Optional[Dict[str, Any]], t: float) -> Dict[str, Any]:
     out = {"num": None, "source": "", "ts": None, "note": "", "readings": []}
     if mine is None:
         return out
@@ -141,11 +145,12 @@ def fresh_own_node(now: Optional[float] = None) -> Optional[int]:
     BOTH the wall clock and, for a real read, the monotonic clock (r6 F2) --
     what a send stamps on its row."""
     t = time.time() if now is None else now
-    st = own_node_status(t)
+    with _LOCK:                       # ONE snapshot: num and anchors together (r7 nit 4)
+        mine = dict(_OWN) if _OWN is not None else None
+    st = _status_of(mine, t)
     if st["num"] is None or not (0 <= t - st["ts"] <= OWN_FRESH_S):
         return None
-    with _LOCK:
-        mono = _OWN.get("mono") if _OWN is not None else None
+    mono = mine.get("mono") if mine else None
     if mono is not None and not (0 <= time.monotonic() - mono <= OWN_FRESH_S):
         return None
     return st["num"]
@@ -284,10 +289,12 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str,
             f"config says !{cnum:08x} but this box's own DM header showed "
             f"!{ev['contra_seen']:08x} — not used; fix [meshtastic] own_node_id in global.ini")) if x))
         return out
-    conn_ts = st.get("ts") if conn_any == cnum else None
-    if (fresh or conn_any is None) and conn_any == cnum and not _within(
-            conn_ts if isinstance(conn_ts, (int, float)) else None, t):
-        conn_any = None          # a send stamps a connection id only while fresh
+    # slice-2 r7 F1: ONE freshness rule -- a send stamps a connection id only
+    # while fresh_own_node (wall AND monotonic) says so; this branch had its
+    # own wall-only copy, so a backward step + matching config stamped an
+    # id the registry itself called stale
+    if fresh and conn_any == cnum and fresh_own_node(t) != cnum:
+        conn_any = None
     if conn_any == cnum:
         # the CONNECTION's own authority (today's rule), config named beside it
         out.update(num=cnum, source=f"{csrc}, matching the configured id")
