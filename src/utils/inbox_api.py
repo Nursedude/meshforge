@@ -429,6 +429,9 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     todo = []
     refuted = []
     tx_from = snap.get("tx_from") or {}
+    # slice 2 corroboration: this box's own DM headers are evidence for or
+    # against the configured own id (garbage / absent = no evidence)
+    own_radio.observe_own_headers([tx_from.get(m["packet_id"]) for _, m in sends], now=now)
     for t, m in sends:
         k = kept.get(m["id"])
         og = dd.dm_origin(t.get("partner"), origins.get(m["id"]), tx_from.get(m["packet_id"]))
@@ -792,6 +795,16 @@ def validate_send(data: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     return {"text": text, "channel": channel, "dest_num": num, "to_id": f"!{num:08x}"}, None
 
 
+def _send_stamp(own: Dict[str, Any], dest_num: Optional[int]) -> Optional[int]:
+    """The own id a DM's row carries. An id that may rule a self-DM out is
+    stamped; an ASSERTED (never corroborated) configured id only on a DM to
+    that very id -- it then reads self, never delivered (Fable r1 I2)."""
+    if own.get("num") is not None:
+        return own["num"]
+    so = own.get("self_only")
+    return so if so is not None and so == dest_num else None
+
+
 def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     """Transmit a validated Meshtastic message and record it. Returns (HTTP status, body)."""
     from gateway.meshtastic_protobuf_client import send_text_direct_with_id
@@ -814,7 +827,8 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     rec = messaging.store_outgoing(
         content=params["text"], network="meshtastic", to_id=params["to_id"],
         channel=params["channel"], delivered=handed_off, packet_id=packet_id,
-        own_id=resolve_own()["num"] if params["to_id"] is not None else None)
+        own_id=_send_stamp(resolve_own(record=True), params["dest_num"])
+        if params["to_id"] is not None else None)
     body = {
         "state": "handed_off" if handed_off else "not_sent",
         "detail": ("Handed to the radio. Delivery is unconfirmed." if handed_off

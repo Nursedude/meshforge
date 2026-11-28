@@ -52,10 +52,26 @@ def global_config_path() -> Path:
 #: copies the full id the radio prints, so a short one is a typo, not a node.
 OWN_NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{8}$")
 OWN_NODE_ID_KEY = "own_node_id"
-#: Keys a human plausibly meant for ``own_node_id`` — refused LOUDLY, never
-#: read as "unset" (a typo must not silently leave the id unknown).
-_OWN_NODE_ID_LOOKALIKES = ("node_id", "own_id", "own_node", "ownnodeid",
-                           "my_node_id", "my_node_num", "own_node_num")
+#: A key a human plausibly meant for ``own_node_id`` (normalised: lower case,
+#: letters/digits only) — refused LOUDLY, never read as "unset" (Fable r1 #4:
+#: 7 exact names were too few).
+_OWN_NODE_ID_LOOKALIKE_CORE = ("nodeid", "nodenum", "ownnode", "ownid", "myid", "mynode")
+#: ConfigParser's [DEFAULT] leaks into every section (Fable r1 #5): parse
+#: with an unreachable default-section name so [DEFAULT] is an ordinary one.
+_NO_DEFAULT = "\x00meshforge-no-default"
+
+
+def _own_id_parser() -> configparser.ConfigParser:
+    return configparser.ConfigParser(interpolation=None, default_section=_NO_DEFAULT)
+
+
+def _is_meshtastic(section: str) -> bool:
+    return section.strip().lower() == "meshtastic"
+
+
+def _lookalike(key: str) -> bool:
+    k = re.sub(r"[^0-9a-z]", "", key.lower())
+    return key != OWN_NODE_ID_KEY and any(c in k for c in _OWN_NODE_ID_LOOKALIKE_CORE)
 
 
 def read_own_node_id(path: Optional[Path] = None) -> Dict[str, Any]:
@@ -67,28 +83,41 @@ def read_own_node_id(path: Optional[Path] = None) -> Dict[str, Any]:
       ``{"state": "invalid", "num": None, "why": ...}``   present, refused
       ``{"state": "unreadable", "num": None, "why": ...}`` file unreadable
     Unset is today's behaviour (the id is unknown). An invalid value is never
-    absorbed into unset: the witness line says it was refused, and why.
+    absorbed into unset: the witness line says it was refused, and why. The
+    section name matches in any case/padding (``[Meshtastic]``); the key is
+    refused under any other section and beside a lookalike key.
     """
     p = global_config_path() if path is None else Path(path)
     unset = {"state": "unset", "num": None, "why": ""}
     try:
         if not p.exists():
             return unset
-        parser = configparser.ConfigParser(interpolation=None)
+        parser = _own_id_parser()
         with open(p, encoding="utf-8") as fh:
             parser.read_file(fh)
     except (OSError, UnicodeDecodeError, configparser.Error) as e:
         return {"state": "unreadable", "num": None,
                 "why": f"{p.name} unreadable: {type(e).__name__}"}
-    if not parser.has_section("meshtastic"):
-        return unset
-    raw = parser.get("meshtastic", OWN_NODE_ID_KEY, fallback=None)
-    if raw is None:
-        near = [k for k in parser.options("meshtastic")
-                if k.replace("-", "_") in _OWN_NODE_ID_LOOKALIKES]
-        if near:
+    mine = [sec for sec in parser.sections() if _is_meshtastic(sec)]
+    for sec in parser.sections():
+        if sec in mine:
+            continue
+        stray = [k for k in parser.options(sec) if k == OWN_NODE_ID_KEY or _lookalike(k)]
+        if stray:
             return {"state": "invalid", "num": None,
-                    "why": f"[meshtastic] has {near[0]!r}, not {OWN_NODE_ID_KEY!r}"}
+                    "why": f"{stray[0]!r} is under [{sec}], not [meshtastic]"}
+    if len(mine) > 1:
+        return {"state": "invalid", "num": None,
+                "why": f"{len(mine)} [meshtastic] sections ({', '.join(mine)})"}
+    if not mine:
+        return unset
+    sec = mine[0]
+    near = [k for k in parser.options(sec) if _lookalike(k)]
+    if near:
+        return {"state": "invalid", "num": None,
+                "why": f"[meshtastic] has {near[0]!r} — the key is {OWN_NODE_ID_KEY!r}"}
+    raw = parser.get(sec, OWN_NODE_ID_KEY, fallback=None)
+    if raw is None:
         return unset
     v = raw.strip()
     if v == "":
@@ -148,22 +177,35 @@ OWN_NODE_ID_TEMPLATE = (
 
 def ensure_own_node_id_section(path: Optional[Path] = None) -> Path:
     """Make sure global.ini has a ``[meshtastic]`` section to edit; returns the
-    path. Never touches an existing section; appends the template otherwise
-    (creating the file if absent). Hands a root-created file back to the
-    operator (sudo TUI). Raises OSError on a write failure -- the caller says it."""
+    path. Never touches a file that already has one (any header ConfigParser
+    accepts: ``[Meshtastic]``, ``[meshtastic] # radio`` — Fable r1 #3 dup'd
+    those and broke the whole file); appends the template otherwise (creating
+    the file if absent). A symlink is written THROUGH (r1 #7). An undecodable
+    or malformed file is refused UNTOUCHED as ``OSError`` (r1 #6) — the caller
+    says it. A root-created file goes back to the operator (sudo TUI)."""
     from utils.paths import atomic_write_text, chown_to_operator
     p = global_config_path() if path is None else Path(path)
+    target = p.resolve() if p.is_symlink() else p
     try:
-        existing = p.read_text(encoding="utf-8")
+        existing = target.read_bytes().decode("utf-8")
     except FileNotFoundError:
         existing = None
-    if existing is not None and re.search(r"(?m)^\s*\[meshtastic\]\s*$", existing):
-        return p
-    p.parent.mkdir(parents=True, exist_ok=True)
+    except UnicodeDecodeError as e:
+        raise OSError(f"{p} is not UTF-8 text ({e.reason}); not modified") from e
+    if existing is not None:
+        parser = _own_id_parser()
+        try:
+            parser.read_string(existing)
+        except configparser.Error as e:
+            raise OSError(f"{p} is not a readable INI file ({type(e).__name__}); "
+                          "not modified") from e
+        if any(_is_meshtastic(sec) for sec in parser.sections()):
+            return p
+    target.parent.mkdir(parents=True, exist_ok=True)
     body = OWN_NODE_ID_TEMPLATE if not existing else (
         existing.rstrip("\n") + "\n\n" + OWN_NODE_ID_TEMPLATE)
-    atomic_write_text(p, body)
-    chown_to_operator(p)
+    atomic_write_text(target, body)
+    chown_to_operator(target)
     return p
 
 

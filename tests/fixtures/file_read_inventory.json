@@ -1839,8 +1839,8 @@
   "class": "other",
   "count": 1
  },
- "src/utils/global_config.py::ensure_own_node_id_section::read_text": {
-  "audited": "2026-11-27 BIC-2 DM slice 2: reads ~/.config/meshforge/global.ini ([meshtastic] own_node_id), never the RNS config",
+ "src/utils/global_config.py::ensure_own_node_id_section::read_bytes": {
+  "audited": "2026-11-27 BIC-2 DM slice 2 r1 fold: reads ~/.config/meshforge/global.ini (strict utf-8, refused untouched), never the RNS config",
   "class": "other",
   "count": 1
  },
@@ -1936,6 +1936,11 @@
  },
  "src/utils/operator_line_view.py::read_status::read_text": {
   "audited": "r12 2026-11-22 module never names the RNS config (marker scan) \u2014 not line-audited",
+  "class": "other",
+  "count": 1
+ },
+ "src/utils/own_radio.py::_load_corr::open": {
+  "audited": "2026-11-27 BIC-2 DM slice 2 r1 fold: reads ~/.local/share/meshforge/own_node_corroboration.json, never the RNS config",
   "class": "other",
   "count": 1
  },
