@@ -362,13 +362,8 @@ class TestResolveOwn:
         hand-forged, failed open on a write error. Evidence is in-memory now."""
         import inspect
         src = inspect.getsource(own_radio)
-        assert "_corr_path" not in src
-        # 11-28: the ONE write is the gateway's connection READING (a
-        # measurement, not config evidence; tests/test_own_radio_peer.py)
-        assert src.count("atomic_write") == 1
-        assert "atomic_write" in inspect.getsource(own_radio.publish_own_node)
-        for fn in (own_radio.observe_own_headers, own_radio.resolve_own):
-            assert "atomic_write" not in inspect.getsource(fn)
+        # 11-28: the gateway's published reading was dropped too (Fable r4+r5)
+        assert "_corr_path" not in src and "atomic_write" not in src
 
 
 # ── the consumers: the send stamp and the witness line ─────────────────────

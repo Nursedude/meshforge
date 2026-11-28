@@ -1287,7 +1287,4 @@ def _pin_own_node_config(monkeypatch):
         return
     monkeypatch.setattr(own_radio, "_read_config",
                         lambda: {"state": "unset", "num": None, "why": ""})
-    # 11-28: nor THIS box's gateway own-id file (a moc run would read moc's)
-    monkeypatch.setattr(own_radio, "peer_path",
-                        lambda: Path("/nonexistent-pytest/own_radio_gateway.json"))
     yield

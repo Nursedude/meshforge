@@ -251,23 +251,35 @@ class MeshtasticDataCollectorMixin:
 
     def _own_node_id(self, interface):
         """This radio's own node id from the EXISTING connection
-        (``myInfo.my_node_num``, else ``localNode.nodeNum``), or None.
-        Never inferred from traffic (MAP-H H14 r3 F6)."""
-        from utils.own_radio import is_this_box_radio, note_own_node, num_from_interface
+        (``myInfo.my_node_num``, else ``localNode.nodeNum``), or None --
+        for TAGGING the map's own row (MAP-H H14 r3 F6). Never inferred from
+        traffic. The DM judge gets a stricter read (below)."""
+        from utils.own_radio import (is_this_box_radio, note_own_node,
+                                     num_from_interface, _valid)
         num, attr = num_from_interface(interface)
-        if num is None:
-            return None
-        # BIC-2 r4 #1: the DM judge's own-radio id, from THIS connection --
-        # only when it is the radio inbox sends through (localhost; Fable r6
-        # #1: a remote meshtasticd_host is another box's radio, never ours).
-        # Measured 11-28: this drain runs EVERY cycle on a meshtasticd box (no
-        # /json/*, Issue #76) -- except where the gateway owns :4403, which
-        # then publishes the id itself (gateway.meshtastic_handler).
-        # r4 F3: localhost AND the primary port (own_radio.is_this_box_radio)
-        host = getattr(self, "get_meshtasticd_host", lambda: "")()
-        port = getattr(self, "get_meshtasticd_port", lambda: None)()
-        if is_this_box_radio(host, port):
-            note_own_node(num, source=f"map collector connection ({attr})")
+        if num is not None:
+            # BIC-2: the DM judge's own-radio id -- ONLY this session's
+            # handshake value (Fable r5 F1: the library's reconnect keeps an
+            # OLD localNode.nodeNum) and ONLY for the radio inbox sends
+            # through (localhost + primary port; Fable r6 #1, r4 F3).
+            # Measured 11-28: this drain runs EVERY cycle on a meshtasticd box
+            # (no /json/*, Issue #76) -- except where the gateway owns :4403;
+            # there no reading exists (operator 11-28: header-only rule).
+            host = getattr(self, "get_meshtasticd_host", lambda: "")()
+            port = getattr(self, "get_meshtasticd_port", lambda: None)()
+            if is_this_box_radio(host, port):
+                note_own_node(num, source=f"map collector connection ({attr})")
+        else:
+            # map tagging only: the localNode fallback stays (a stale id there
+            # only withholds radio_last_heard from one row -- never a verdict)
+            try:
+                ln = getattr(interface, "localNode", None)
+                fb = getattr(ln, "nodeNum", None) if ln is not None else None
+            except Exception:
+                fb = None
+            if not _valid(fb):
+                return None
+            num = int(fb)
         return self._canonical_meshtastic_id("", num)
 
     @staticmethod

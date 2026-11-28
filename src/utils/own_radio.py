@@ -27,15 +27,13 @@ _OWN: Optional[Dict[str, Any]] = None
 _MAX = 0xFFFFFFFF
 #: A send stamps the id only if a connection re-read it this recently (r5 #1:
 #: "last good id stands" for a process lifetime would outlive a radio swap).
-#: Writers: the map collector's TCP drain -- MEASURED 11-28 to run EVERY
-#: cycle on a meshtasticd box (it serves no /json/*, Issue #76, so the HTTP
-#: collect always yields nothing; Fable r6 #2's "usually empty" holds only for
-#: an ESP32 webserver) -- and, where the gateway owns :4403 and the map defers
-#: (#17; moc), the gateway's own connection via ``publish_own_node``. Newest
-#: reading wins. Config (slice 2, ``resolve_own``) is a cross-check, never the
-#: authority. Residual (r6 W2):
-#: a radio swapped inside this window, with no header seen, can be stamped
-#: with the old id.
+#: The one writer: the map collector's TCP drain -- MEASURED 11-28 to run
+#: EVERY cycle on a meshtasticd box (it serves no /json/*, Issue #76, so the
+#: HTTP collect always yields nothing; Fable r6 #2's "usually empty" holds
+#: only for an ESP32 webserver). Where the gateway owns :4403 the map defers
+#: (#17) and this registry stays empty: header-only rule there (operator
+#: 11-28, after a cross-process file failed Fable r4+r5). Config (slice 2,
+#: ``resolve_own``) is a cross-check, never the authority. Residual (r6 W2):
 OWN_FRESH_S = 3600
 
 
@@ -54,15 +52,6 @@ def note_own_node(num: Any, *, source: str, now: Optional[float] = None) -> None
                 "ts": time.time() if now is None else now}
 
 
-#: The gateway's own-id reading, for a box whose gateway owns :4403 and the
-#: map therefore never reads it (#17 defer; measured 11-28 on one box). The
-#: gateway's EXISTING connection is the measurement -- one writer (the
-#: gateway), one reader (this registry). ``ts`` = the last time that
-#: connection was CONFIRMED LIVE holding this id (Fable r4 F1: never the bare
-#: write time -- a dead link must not keep vouching). Rewritten every
-#: PEER_PUBLISH_S only while live, so a stopped/dead gateway's reading ages out.
-PEER_FILE_NAME = "own_radio_gateway.json"
-PEER_PUBLISH_S = 300.0
 #: The radio inbox sends through: localhost meshtasticd on its PRIMARY port
 #: (Fable r4 F3: a second meshtasticd on :4404 is another radio).
 PRIMARY_PORT = 4403
@@ -71,137 +60,51 @@ _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 FUTURE_SLACK_S = 60.0
 
 
-def peer_path():
-    """Seam (tests pin it: conftest -- never this box's real file)."""
-    from utils.paths import MeshForgePaths
-    return MeshForgePaths.get_data_dir() / PEER_FILE_NAME
-
-
 def is_this_box_radio(host: Any, port: Any) -> bool:
-    """ONE rule for "this connection is to the radio inbox sends through"
-    (map drain + gateway, hfm #5): localhost AND the primary port."""
+    """ONE rule for "this connection is to the radio inbox sends through":
+    localhost AND the primary port."""
     try:
         return str(host) in _LOCAL_HOSTS and int(port) == PRIMARY_PORT
     except (TypeError, ValueError):
         return False
 
 
-def connection_live(interface: Any) -> bool:
-    """True only while a meshtastic library interface's ``isConnected``
-    Event is SET (r4 F1: ``not Event`` is always False -- the truthiness test
-    can never see a dead link). Anything else = not shown live. Never raises."""
-    try:
-        ev = getattr(interface, "isConnected", None)
-        return isinstance(ev, threading.Event) and ev.is_set()
-    except Exception:
-        return False
-
-
 def num_from_interface(interface: Any):
-    """``(num, attr)`` -- an interface's own id from its EXISTING connection
-    (``myInfo.my_node_num``, else ``localNode.nodeNum``), or ``(None, "")``.
-    The ONE reader for the map drain and the gateway (hfm #5). Never raises."""
-    for oname, attr in (("myInfo", "my_node_num"), ("localNode", "nodeNum")):
-        try:
-            obj = getattr(interface, oname, None)
-            num = getattr(obj, attr, None) if obj is not None else None
-        except Exception:
-            continue
-        if _valid(num):
-            return int(num), attr
-    return None, ""
-
-
-def publish_own_node(num: Any, *, source: str, now: Optional[float] = None) -> bool:
-    """Gateway side: write the id its LIVE connection holds (the caller
-    checks ``connection_live``). Never raises; False when nothing was written
-    (not a node / write fault -- the caller logs it, r4 F6)."""
-    if not _valid(num):
-        return False
+    """``(num, "my_node_num")`` -- the own id THIS connection session's
+    handshake delivered (``myInfo.my_node_num``), or ``(None, "")``. Never
+    ``localNode.nodeNum`` (Fable r5 F1, run against meshtastic 2.7.11: the
+    library's own ``_reconnect()`` sets ``myInfo = None`` but keeps the OLD
+    session's ``localNode.nodeNum`` -- that fallback vouched for a radio that
+    may be gone). Never raises."""
     try:
-        import json
-        import os
-        from utils import paths
-        doc = {"num": int(num), "source": str(source)[:80],
-               "ts": time.time() if now is None else float(now), "pid": os.getpid()}
-        paths.atomic_write_text(peer_path(), json.dumps(doc))
-        return True
+        obj = getattr(interface, "myInfo", None)
+        num = getattr(obj, "my_node_num", None) if obj is not None else None
     except Exception:
-        return False
-
-
-def _finite(ts: Any) -> bool:
-    import math
-    try:
-        return (isinstance(ts, (int, float)) and not isinstance(ts, bool)
-                and math.isfinite(float(ts)))
-    except (OverflowError, ValueError, TypeError):
-        return False
-
-
-def _read_peer(now: float) -> Dict[str, Any]:
-    """``{"num", "source", "ts"}`` | ``{"error": why}`` | ``{}`` (no file).
-    NEVER raises (r4 F4: a corrupt file must not cost a send's row)."""
-    import json
-    try:
-        p = peer_path()
-        if not p.exists():
-            return {}
-        doc = json.loads(p.read_text(encoding="utf-8"))
-        ts = doc.get("ts") if isinstance(doc, dict) else None
-        if not (isinstance(doc, dict) and _valid(doc.get("num")) and _finite(ts)):
-            return {"error": "gateway own-id file unreadable (not a reading)"}
-        ts = float(ts)
-        if ts > now + FUTURE_SLACK_S:
-            return {"error": "gateway own-id file stamped in the future; ignored"}
-        if now - ts > OWN_FRESH_S:        # r4 F5: a dead gateway's file never vouches
-            return {"error": f"gateway own-id reading !{int(doc['num']):08x} is "
-                             f"{(now - ts) / 3600:.1f} h old (gateway not live?); ignored"}
-        return {"num": int(doc["num"]),
-                "source": str(doc.get("source") or "gateway connection")[:80], "ts": ts}
-    except Exception as e:
-        return {"error": f"gateway own-id file unreadable ({type(e).__name__})"}
+        return None, ""
+    return (int(num), "my_node_num") if _valid(num) else (None, "")
 
 
 def own_node_status(now: Optional[float] = None) -> Dict[str, Any]:
-    """Every valid connection reading -- this process's (the map drain, any
-    age: it dies with the process) and the gateway's file (within
-    OWN_FRESH_S). ``{"num", "source", "ts", "note", "peer_error", "readings"}``.
-    Readings that DISAGREE refuse (``num`` None + note; r4 F2: newest-wins
-    settled a doubt) unless the older one is past OWN_FRESH_S (superseded,
-    said). ``readings`` = every reading consulted, so a config check sees all."""
+    """This process's connection reading (the map's collect drain).
+    ``{"num", "source", "ts", "note", "readings"}``; ``num`` None when
+    unknown. A future-stamped reading is never THE id (said, r4 F7), but it
+    stays in ``readings`` so a disagreeing config still refuses (r1 I1).
+
+    Operator 11-28 ("drop the gateway file", after Fable r4+r5): no
+    cross-process reading -- a box whose gateway owns :4403 (the map defers,
+    #17) has NO own-id reading and its DMs keep the header-only rule."""
     t = time.time() if now is None else now
     with _LOCK:
         mine = dict(_OWN) if _OWN is not None else None
-    out = {"num": None, "source": "", "ts": None, "note": "", "peer_error": "",
-           "readings": []}
-    notes = []
-    future = None
-    if mine is not None and mine["ts"] > t + FUTURE_SLACK_S:      # r4 F7
-        notes.append(f"this process's reading !{mine['num']:08x} is stamped in the future; "
-                     "not used as the id")
-        future, mine = mine, None
-    peer = _read_peer(t)
-    out["peer_error"] = peer.get("error", "")
-    cands = [r for r in (mine, peer if "num" in peer else None) if r]
-    # a future reading is never THE id, but it still counts against a config
-    # that disagrees (r1 I1: doubt refuses)
-    out["readings"] = [(r["num"], r["source"]) for r in cands + ([future] if future else [])]
-    if cands:
-        cands.sort(key=lambda r: r["ts"], reverse=True)
-        best = cands[0]
-        rivals = [r for r in cands[1:] if r["num"] != best["num"]]
-        live_rivals = [r for r in rivals if t - r["ts"] <= OWN_FRESH_S]
-        if live_rivals:
-            r = live_rivals[0]
-            notes.append(f"radio readings disagree: !{best['num']:08x} ({best['source']}) vs "
-                         f"!{r['num']:08x} ({r['source']}) — not used")
-        else:
-            out.update(num=best["num"], source=best["source"], ts=best["ts"])
-            if rivals:
-                notes.append(f"an older reading !{rivals[0]['num']:08x} ({rivals[0]['source']}) "
-                             f"was superseded by !{best['num']:08x}")
-    out["note"] = "; ".join(notes)
+    out = {"num": None, "source": "", "ts": None, "note": "", "readings": []}
+    if mine is None:
+        return out
+    out["readings"] = [(mine["num"], mine["source"])]
+    if mine["ts"] > t + FUTURE_SLACK_S:
+        out["note"] = (f"this process's reading !{mine['num']:08x} is stamped in the "
+                       "future; not used as the id")
+        return out
+    out.update(num=mine["num"], source=mine["source"], ts=mine["ts"])
     return out
 
 
@@ -324,9 +227,8 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str,
     if state in ("invalid", "unreadable"):
         out["note"] = f"configured own_node_id refused: {cfg.get('why') or state}"
     st = own_node_status(t)
-    # r4 F2: the status's own doubts (disagreement, superseded, refused
-    # file) are SAID on the witness, never dropped
-    out["note"] = "; ".join(x for x in (out["note"], st.get("note"), st.get("peer_error")) if x)
+    # the status's own doubt (a future reading) is SAID, never dropped
+    out["note"] = "; ".join(x for x in (out["note"], st.get("note")) if x)
     conn_any = st.get("num") if _valid(st.get("num")) else None
     csrc = st.get("source") or "a connection"
     if cnum is None:
@@ -334,8 +236,7 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str,
         if conn is not None:
             out.update(num=conn, source=csrc)
         return out
-    # r1 I1 + r4 F2: EVERY reading consulted is checked against config, not
-    # only the one chosen
+    # r1 I1: every reading (any age, future included) is checked against config
     against = [(n, src) for n, src in st.get("readings") or () if n != cnum]
     if against:
         n, src = against[0]
