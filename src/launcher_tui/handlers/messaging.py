@@ -36,9 +36,10 @@ def own_id_summary(own) -> str:
         lines.append("This box's radio id: UNKNOWN")
         so = own.get("self_only")
         if isinstance(so, int) and not isinstance(so, bool):
-            lines.append(f"Configured !{so:08x} is NOT YET CORROBORATED: until a radio read or")
-            lines.append("one of this box's own DM headers matches it, it only marks a DM to")
-            lines.append("that id as 'to myself' (never delivered).")
+            lines.append(f"Configured: !{so:08x}. Whether it is corroborated is judged LIVE by")
+            lines.append("the map (a radio read or one of this box's own DM headers matching it")
+            lines.append("in the last hour) -- see the /inbox status line. Uncorroborated, it")
+            lines.append("only marks a DM to that id as 'to myself' (never delivered).")
         lines.append("A DM to this box's own radio is then ruled out only by the DM's own")
         lines.append("uplinked header; without it a real delivery can stay 'unconfirmed'.")
     if own.get("note"):

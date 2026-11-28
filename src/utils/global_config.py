@@ -52,10 +52,16 @@ def global_config_path() -> Path:
 #: copies the full id the radio prints, so a short one is a typo, not a node.
 OWN_NODE_ID_RE = re.compile(r"^![0-9a-fA-F]{8}$")
 OWN_NODE_ID_KEY = "own_node_id"
-#: A key a human plausibly meant for ``own_node_id`` (normalised: lower case,
-#: letters/digits only) — refused LOUDLY, never read as "unset" (Fable r1 #4:
-#: 7 exact names were too few).
-_OWN_NODE_ID_LOOKALIKE_CORE = ("nodeid", "nodenum", "ownnode", "ownid", "myid", "mynode")
+#: A key a human plausibly meant for ``own_node_id`` INSIDE ``[meshtastic]``
+#: (normalised: lower case, letters/digits only) -- refused LOUDLY, never read
+#: as "unset". Exact-normalised, never a substring, and never in another
+#: section: global.ini is SHARED with sister apps (Fable r2 N4: a substring
+#: test over every section refused a valid id beside ``[power] shutdown_idle``
+#: / ``[gateway] gateway_node_id``). Outside ``[meshtastic]`` only the exact
+#: key itself is refused (it was put in the wrong place).
+_OWN_NODE_ID_LOOKALIKES = frozenset((
+    "ownnodeid", "ownnodeids", "nodeid", "nodenum", "ownnode", "ownnodenum",
+    "ownid", "myid", "mynode", "mynodeid", "mynodenum", "ownradioid", "radioid"))
 #: ConfigParser's [DEFAULT] leaks into every section (Fable r1 #5): parse
 #: with an unreachable default-section name so [DEFAULT] is an ordinary one.
 _NO_DEFAULT = "\x00meshforge-no-default"
@@ -70,8 +76,8 @@ def _is_meshtastic(section: str) -> bool:
 
 
 def _lookalike(key: str) -> bool:
-    k = re.sub(r"[^0-9a-z]", "", key.lower())
-    return key != OWN_NODE_ID_KEY and any(c in k for c in _OWN_NODE_ID_LOOKALIKE_CORE)
+    return (key != OWN_NODE_ID_KEY
+            and re.sub(r"[^0-9a-z]", "", key.lower()) in _OWN_NODE_ID_LOOKALIKES)
 
 
 def read_own_node_id(path: Optional[Path] = None) -> Dict[str, Any]:
@@ -93,7 +99,7 @@ def read_own_node_id(path: Optional[Path] = None) -> Dict[str, Any]:
         if not p.exists():
             return unset
         parser = _own_id_parser()
-        with open(p, encoding="utf-8") as fh:
+        with open(p, encoding="utf-8-sig") as fh:     # a BOM is not a fault (r2 N4)
             parser.read_file(fh)
     except (OSError, UnicodeDecodeError, configparser.Error) as e:
         return {"state": "unreadable", "num": None,
@@ -102,7 +108,7 @@ def read_own_node_id(path: Optional[Path] = None) -> Dict[str, Any]:
     for sec in parser.sections():
         if sec in mine:
             continue
-        stray = [k for k in parser.options(sec) if k == OWN_NODE_ID_KEY or _lookalike(k)]
+        stray = [k for k in parser.options(sec) if k == OWN_NODE_ID_KEY]
         if stray:
             return {"state": "invalid", "num": None,
                     "why": f"{stray[0]!r} is under [{sec}], not [meshtastic]"}

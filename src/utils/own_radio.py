@@ -87,106 +87,89 @@ def _read_config() -> Dict[str, Any]:
 
 #: The reader's closed answer set (r1 #8): anything else is refused, said.
 CONFIG_STATES = ("unset", "ok", "invalid", "unreadable")
-#: Corroboration states of a configured id (operator 11-27 "corroborate first").
+#: Trust of a configured id (operator 11-27 "corroborate first").
 TRUST_CORROBORATED = "corroborated"
 TRUST_CONTRADICTED = "contradicted"
 TRUST_ASSERTED = "asserted"
-_CORR_LOCK = threading.Lock()
+#: Bound on the own-DM packet ids already counted as evidence.
+SEEN_PIDS_MAX = 4096
+
+#: THE corroboration evidence (Fable r2 fold, the seam after r1 I2 + r2 I-A/
+#: I-B were one defect kind twice: "a config id rules a self-DM out when the
+#: evidence no longer supports it"). IN-MEMORY, per process, with the arc's own
+#: shelf life (OWN_FRESH_S) -- a persisted record outlived radio swaps and
+#: restarts, could be hand-forged, and failed OPEN on a write error. Keyed on
+#: the configured value: a config change forgets the old value's evidence.
+#: Each own-DM header counts ONCE, at first sight (a re-read of the witness
+#: ring can neither refresh a match nor undo a contradiction).
+_EVID_LOCK = threading.Lock()
+_EVID: Dict[str, Any] = {"cnum": None, "match_ts": None, "match_via": "",
+                         "contra_ts": None, "contra_seen": None, "pids": {}}
 
 
-def _corr_path():
-    """Where the map records whether the configured id was ever corroborated.
-    ONE writer (the map, ``record=True`` / ``observe_own_header``); the TUI only
-    reads it."""
-    from utils.paths import get_real_user_home
-    return get_real_user_home() / ".local" / "share" / "meshforge" / "own_node_corroboration.json"
+def _evid_for(cnum: int) -> Dict[str, Any]:
+    """Caller holds _EVID_LOCK. Resets the evidence when the config value moved."""
+    if _EVID["cnum"] != cnum:
+        _EVID.update(cnum=cnum, match_ts=None, match_via="", contra_ts=None,
+                     contra_seen=None, pids={})
+    return _EVID
 
 
-def _load_corr(cnum: int) -> Optional[Dict[str, Any]]:
-    """The record for THIS configured value, or None (absent / garbage / for
-    another value). Garbage is never corroboration."""
-    import json
+def observe_own_headers(items: Any, *, now: Optional[float] = None) -> None:
+    """``[(packet_id, header_from), ...]`` of THIS box's own DMs (the ack
+    witness's ``tx_from``, matched by packet id) -- evidence for or against the
+    configured id. Config read ONCE per batch; garbage items are no evidence;
+    no configured id = nothing to judge. Never raises."""
     try:
-        with open(_corr_path(), encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    if (not isinstance(doc, dict) or doc.get("config_num") != cnum
-            or doc.get("state") not in (TRUST_CORROBORATED, TRUST_CONTRADICTED)
-            or not _valid(doc.get("seen"))):
-        return None
-    return doc
-
-
-#: witness for a corroboration write that failed (hfm #9) — said on the line
-_CORR_WRITE_ERRORS = {"n": 0, "last": ""}
-
-
-def _record(cnum: int, seen: int, via: str, now: Optional[float]) -> None:
-    """Persist the latest evidence about the configured id (latest wins); a
-    write happens only when the verdict or the evidence changes."""
-    import json
-    state = TRUST_CORROBORATED if seen == cnum else TRUST_CONTRADICTED
-    with _CORR_LOCK:
-        prior = _load_corr(cnum)
-        if prior and prior.get("state") == state and prior.get("seen") == seen \
-                and prior.get("via") == via:
-            return
-        doc = {"config_num": cnum, "state": state, "seen": seen, "via": str(via)[:80],
-               "ts": time.time() if now is None else now}
-        try:
-            from utils.paths import atomic_write_text
-            path = _corr_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(path, json.dumps(doc))
-        except Exception as e:     # never let bookkeeping cost a send or a read
-            _CORR_WRITE_ERRORS["n"] += 1
-            _CORR_WRITE_ERRORS["last"] = type(e).__name__
-
-
-def observe_own_header(num: Any, *, now: Optional[float] = None) -> None:
-    """The uplinked header ``from`` of one of THIS box's own DMs (matched by
-    packet id in the ack witness) — evidence for or against the configured id.
-    Garbage is no evidence; no configured id = nothing to corroborate."""
-    if not _valid(num):
+        pairs = [(pid, num) for pid, num in (x for x in (items or ())
+                                             if isinstance(x, tuple) and len(x) == 2)
+                 if pid is not None and _valid(num)]
+    except Exception:
+        return
+    if not pairs:
         return
     cfg = _read_config()
-    if isinstance(cfg, dict) and cfg.get("state") == "ok" and _valid(cfg.get("num")):
-        _record(int(cfg["num"]), int(num), "this box's own DM header", now)
-
-
-def observe_own_headers(nums: Any, *, now: Optional[float] = None) -> None:
-    """``observe_own_header`` for one inbox read: the config is read ONCE and
-    the newest-last order is kept (latest evidence wins)."""
-    seen = [int(n) for n in (nums or ()) if _valid(n)]
-    if not seen:
+    if not (isinstance(cfg, dict) and cfg.get("state") == "ok" and _valid(cfg.get("num"))):
         return
-    cfg = _read_config()
-    if isinstance(cfg, dict) and cfg.get("state") == "ok" and _valid(cfg.get("num")):
-        cnum = int(cfg["num"])
-        # one write at most: a contradiction anywhere in this read outranks
-        # agreement (doubt refuses), else the agreement
-        bad = [n for n in seen if n != cnum]
-        _record(cnum, bad[-1] if bad else cnum, "this box's own DM header", now)
+    cnum = int(cfg["num"])
+    t = time.time() if now is None else now
+    with _EVID_LOCK:
+        ev = _evid_for(cnum)
+        for pid, num in pairs:
+            if pid in ev["pids"]:
+                continue
+            ev["pids"][pid] = t
+            if len(ev["pids"]) > SEEN_PIDS_MAX:
+                ev["pids"].pop(next(iter(ev["pids"])))
+            if int(num) == cnum:
+                if ev["match_ts"] is None or t > ev["match_ts"]:
+                    ev["match_ts"], ev["match_via"] = t, "this box's own DM header"
+            elif ev["contra_ts"] is None or t > ev["contra_ts"]:
+                ev["contra_ts"], ev["contra_seen"] = t, int(num)
 
 
-def resolve_own(now: Optional[float] = None, *, fresh: bool = True,
-                record: bool = False) -> Dict[str, Any]:
+def _within(ts: Optional[float], now: float) -> bool:
+    return ts is not None and 0 <= now - ts <= OWN_FRESH_S
+
+
+def resolve_own(now: Optional[float] = None, *, fresh: bool = True) -> Dict[str, Any]:
     """THE own-id answer every consumer reads.
 
     ``{"num", "self_only", "source", "note", "config", "trust"}``:
-      ``num``       an id that may RULE OUT a self-DM (a connection read, or a
-                    configured id CORROBORATED by one), else None;
-      ``self_only`` an ASSERTED configured id (never corroborated): a send may
-                    stamp it only on a DM addressed to it (-> self, never
-                    delivered). Fable r1 I2: an uncontested wrong config id
-                    was a new false 'delivered'.
-    A connection id of ANY age that disagrees with config vetoes both (r1 I1:
-    freshness gates stamping a connection id alone, never the veto).
-    ``fresh`` = what a send may stamp; ``fresh=False`` = the witness view.
-    ``record`` = the map's judge/send path persists corroboration; every other
-    caller is read-only.
+      ``num``       an id that may RULE OUT a self-DM -- a fresh connection
+                    read, or a configured id CORROBORATED within OWN_FRESH_S
+                    (a fresh agreeing connection read or own-DM header) with
+                    no contradiction in that window -- else None;
+      ``self_only`` an ASSERTED configured id: a send may stamp it only on a
+                    DM addressed to it (-> self, never delivered).
+    Vetoes (doubt refuses): a connection read of ANY age that disagrees (r1
+    I1); an own-DM header that disagreed within OWN_FRESH_S, or stamped in
+    the future (clock step, hfm #6). ``fresh`` = what a send may stamp from a
+    connection alone; ``fresh=False`` = the witness's last-known view.
+    Read-only: evidence is written only by ``observe_own_headers`` and
+    ``note_own_node``.
     """
+    t = time.time() if now is None else now
     cfg = _read_config()
     out = {"num": None, "self_only": None, "source": "", "note": "",
            "config": "unreadable", "trust": ""}
@@ -201,38 +184,37 @@ def resolve_own(now: Optional[float] = None, *, fresh: bool = True,
     out["config"] = state
     if state in ("invalid", "unreadable"):
         out["note"] = f"configured own_node_id refused: {cfg.get('why') or state}"
-    conn_any = own_node()
-    conn = fresh_own_node(now) if fresh else conn_any
-    csrc = own_node_status().get("source") or "a connection"
-    if cnum is not None and conn_any is not None:
-        if record:
-            _record(cnum, conn_any, csrc, now)
-        if cnum != conn_any:
-            out.update(config="mismatch", note=(
-                f"config says !{cnum:08x} but {csrc} read !{conn_any:08x} — not used "
-                "(stale config? radio swapped?); fix [meshtastic] own_node_id in global.ini"))
-            return out
-        out.update(num=cnum, source=f"config, confirmed by {csrc}", trust=TRUST_CORROBORATED)
+    st = own_node_status()
+    conn_any = st.get("num") if _valid(st.get("num")) else None
+    csrc = st.get("source") or "a connection"
+    if cnum is None:
+        conn = fresh_own_node(now) if fresh else conn_any
+        if conn is not None:
+            out.update(num=conn, source=csrc)
         return out
-    if cnum is not None:
-        corr = _load_corr(cnum)
-        if corr and corr["state"] == TRUST_CORROBORATED:
-            out.update(num=cnum, trust=TRUST_CORROBORATED,
-                       source=f"config, corroborated by {corr.get('via') or 'evidence'}")
-        elif corr:
-            out.update(trust=TRUST_CONTRADICTED, note=(
-                f"config says !{cnum:08x} but {corr.get('via') or 'evidence'} showed "
-                f"!{corr['seen']:08x} — not used; fix [meshtastic] own_node_id in global.ini"))
-        else:
-            out.update(self_only=cnum, trust=TRUST_ASSERTED, note=(
-                f"configured !{cnum:08x} not yet corroborated (no radio read or own DM "
-                "header has matched it) — used only to mark a DM to it as self"))
-        if _CORR_WRITE_ERRORS["n"]:
-            out["note"] += (f" · {_CORR_WRITE_ERRORS['n']} corroboration write(s) failed "
-                            f"({_CORR_WRITE_ERRORS['last']})")
+    if conn_any is not None and conn_any != cnum:
+        out.update(config="mismatch", trust=TRUST_CONTRADICTED, note=(
+            f"config says !{cnum:08x} but {csrc} read !{conn_any:08x} — not used "
+            "(stale config? radio swapped?); fix [meshtastic] own_node_id in global.ini"))
         return out
-    if conn is not None:
-        out.update(num=conn, source=csrc)
+    with _EVID_LOCK:
+        ev = dict(_evid_for(cnum))
+    ct = ev["contra_ts"]
+    if ct is not None and (_within(ct, t) or ct > t):
+        out.update(trust=TRUST_CONTRADICTED, note=(
+            f"config says !{cnum:08x} but this box's own DM header showed "
+            f"!{ev['contra_seen']:08x} — not used; fix [meshtastic] own_node_id in global.ini"))
+        return out
+    conn_ts = st.get("ts") if conn_any == cnum else None
+    if conn_any == cnum and _within(conn_ts if isinstance(conn_ts, (int, float)) else None, t):
+        out.update(num=cnum, trust=TRUST_CORROBORATED, source=f"config, confirmed by {csrc}")
+    elif _within(ev["match_ts"], t):
+        out.update(num=cnum, trust=TRUST_CORROBORATED,
+                   source=f"config, corroborated by {ev['match_via']}")
+    else:
+        out.update(self_only=cnum, trust=TRUST_ASSERTED, note=(
+            f"configured !{cnum:08x} not corroborated in the last {OWN_FRESH_S // 60} min "
+            "(no radio read or own DM header matched it) — used only to mark a DM to it as self"))
     return out
 
 
@@ -241,4 +223,6 @@ def _reset() -> None:
     global _OWN
     with _LOCK:
         _OWN = None
-    _CORR_WRITE_ERRORS.update(n=0, last="")
+    with _EVID_LOCK:
+        _EVID.update(cnum=None, match_ts=None, match_via="", contra_ts=None,
+                     contra_seen=None, pids={})

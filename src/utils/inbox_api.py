@@ -431,7 +431,8 @@ def _attach_delivery(threads: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Opt
     tx_from = snap.get("tx_from") or {}
     # slice 2 corroboration: this box's own DM headers are evidence for or
     # against the configured own id (garbage / absent = no evidence)
-    own_radio.observe_own_headers([tx_from.get(m["packet_id"]) for _, m in sends], now=now)
+    own_radio.observe_own_headers(
+        [(m["packet_id"], tx_from.get(m["packet_id"])) for _, m in sends], now=now)
     for t, m in sends:
         k = kept.get(m["id"])
         og = dd.dm_origin(t.get("partner"), origins.get(m["id"]), tx_from.get(m["packet_id"]))
@@ -827,7 +828,7 @@ def send(params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     rec = messaging.store_outgoing(
         content=params["text"], network="meshtastic", to_id=params["to_id"],
         channel=params["channel"], delivered=handed_off, packet_id=packet_id,
-        own_id=_send_stamp(resolve_own(record=True), params["dest_num"])
+        own_id=_send_stamp(resolve_own(), params["dest_num"])
         if params["to_id"] is not None else None)
     body = {
         "state": "handed_off" if handed_off else "not_sent",

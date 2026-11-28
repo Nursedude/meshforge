@@ -1939,11 +1939,6 @@
   "class": "other",
   "count": 1
  },
- "src/utils/own_radio.py::_load_corr::open": {
-  "audited": "2026-11-27 BIC-2 DM slice 2 r1 fold: reads ~/.local/share/meshforge/own_node_corroboration.json, never the RNS config",
-  "class": "other",
-  "count": 1
- },
  "src/utils/paths.py::ReticulumPaths._fix_storage_file_permissions::open": {
   "audited": "r12 2026-11-22 line-audited: not the RNS config",
   "class": "other",
