@@ -215,3 +215,192 @@ def test_history_view_keeps_untimed_rows_and_counts_them():
     assert [r["ts"] for r in rows] == [1.0, None, None]
     assert bad == 1 and dropped == 2
     assert history_view("x") == ([], 0, 0)
+
+
+# ---- r3 (Fable BY RUNNING, 11-27): the seam one level DOWN ---------------
+# The view normalized the top-level fields and left rule ROWS and escalation
+# PAYLOADS raw: a list `rule` raised `unhashable` in the brief's last-seen
+# index (the engine swallows it -> the brief FREEZES behind a FRESH banner).
+
+_ROW_HOSTILE = [("rule_id=list", {"rule_id": [1]}),
+                ("subject=dict", {"subject": {"a": 1}}),
+                ("rule_id=nan", {"rule_id": float("nan")}),
+                ("detail=list", {"last_detail": [1]}),
+                ("active=str", {"currently_active": "yes"}),
+                ("active=nan", {"currently_active": float("nan")}),
+                ("fc24=str", {"fire_count_24h": "x"})]
+_ESC_HOSTILE = [("rule=list", {"rule": [1]}), ("subject=dict", {"subject": {"a": 1}}),
+                ("detail=list", {"detail": [1]}), ("rule=nan", {"rule": float("nan")}),
+                ("note=list", {"note": [1]})]
+
+
+def _hostile_row(extra):
+    row = {"rule_id": "r1", "subject": "s1", "currently_active": True,
+           "last_detail": "d", **extra}
+    return {"r1": row}
+
+
+def _hostile_esc_rows(extra, transition="edge_up", legacy=False):
+    esc = {"rule": "ntfy_ack_stale_any", "subject": "ntfy", "detail": "d", **extra}
+    outcome = {"escalation": esc} if legacy else {"extras": {"escalation": esc}}
+    return [{"ts": NOW - 60, "transition": transition, "rule_id": "x",
+             "subject": "s", "detail": "d", "outcome": outcome}]
+
+
+@pytest.mark.parametrize("reader", [f for _, f in _READERS],
+                         ids=[i for i, _ in _READERS])
+@pytest.mark.parametrize("extra", [e for _, e in _ROW_HOSTILE],
+                         ids=[i for i, _ in _ROW_HOSTILE])
+def test_no_shared_reader_raises_on_a_hostile_rule_row(reader, extra, tmp_path):
+    out = reader(_base(rules=_hostile_row(extra)), [], tmp_path)
+    assert "nan · nan" not in out.lower(), out
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["extras", "legacy"])
+@pytest.mark.parametrize("transition", ["edge_up", "edge_down"])
+@pytest.mark.parametrize("extra", [e for _, e in _ESC_HOSTILE],
+                         ids=[i for i, _ in _ESC_HOSTILE])
+def test_the_brief_never_raises_on_a_hostile_escalation_payload(extra, transition,
+                                                               legacy):
+    from mini_dudeai.brief import build_brief
+    out = build_brief(_base(), _hostile_esc_rows(extra, transition, legacy), NOW)
+    assert "nan · nan" not in out.lower(), out
+
+
+def test_a_hostile_escalation_never_freezes_the_written_brief(tmp_path):
+    """END state of r3 I1: write_brief must WRITE (the engine swallows a
+    raise, leaving yesterday's brief behind a FRESH banner)."""
+    from mini_dudeai.brief import write_brief
+    sp, hp, op = tmp_path / "s.json", tmp_path / "h.jsonl", tmp_path / "b.md"
+    sp.write_text(json.dumps(_base()), encoding="utf-8")
+    rows = _hostile_esc_rows({"rule": [1]}) + _hostile_esc_rows({"subject": {"a": 1}})
+    hp.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    text = write_brief(str(sp), str(hp), str(op), now_ts=NOW)
+    assert op.read_text(encoding="utf-8") == text and "Look here first" in text
+
+
+def test_a_non_list_pending_sends_and_a_non_object_escalation_never_raise():
+    from mini_dudeai.brief import _escalation_of, build_brief
+    rules = {"r": {**_ACTIVE["r"], "pending_sends": 5}}
+    assert build_brief(_base(rules=rules), [], NOW)
+    assert _escalation_of({"outcome": {"extras": {"escalation": "x"}}}) is None
+    assert _escalation_of({"outcome": {"escalation": [1]}}) is None
+
+
+def test_rule_rows_are_copied_hashable_and_conservative():
+    from utils.mini_state_view import mini_state_view
+    raw = {"rule_id": [1], "subject": float("nan"), "currently_active": "yes",
+           "last_detail": [1], "fire_count_24h": "x"}
+    v = mini_state_view(_base(rules={"r": raw}))
+    row = v["rules"]["r"]
+    hash((row["rule_id"], row["subject"]))
+    assert row["currently_active"] is True          # garbled flag = ACTIVE
+    assert row["fire_count_24h"] == 0 and isinstance(row["last_detail"], str)
+    assert raw["rule_id"] == [1]                    # the caller's row untouched
+    assert "rules" in v["unreadable"]
+    clean = mini_state_view(_base())
+    assert clean["rules"] == _ACTIVE and clean["unreadable"] == []
+
+
+def test_a_rule_count_with_no_rules_section_is_unreadable_never_quiet():
+    """r3 I4: rules null/absent + rule_count 7 read quiet on every surface."""
+    from mini_dudeai.brief import build_brief
+    from utils.mini_state_view import mini_state_view
+    for st in (_base(rules=None, rule_count=7), {k: v for k, v in
+               _base(rule_count=7).items() if k != "rules"}):
+        assert "rules" in mini_state_view(st)["unreadable"], st
+        out = build_brief(st, [], NOW)
+        assert "Quiet" not in out and "unreadable: rules" in out, out
+    assert mini_state_view(_base(rules=None, rule_count=0))["unreadable"] == []
+
+
+@pytest.mark.parametrize("extra", [{"error_count": 2},
+                                   {"error_count": 0, "source_errors": ["boom"]}],
+                         ids=["known_errors", "named_source_error"])
+def test_a_known_error_never_reads_quiet_in_the_brief(extra):
+    from mini_dudeai.brief import build_brief
+    out = build_brief(_base(rules={}, **extra), [], NOW)
+    assert "Quiet" not in out and "Nothing demands attention" not in out, out
+
+
+def test_quiet_ok_is_the_one_rule():
+    from utils.mini_state_view import mini_state_view, quiet_ok
+    assert quiet_ok(mini_state_view(_base()))
+    for extra in ({"error_count": 2}, {"error_count": float("nan")},
+                  {"source_errors": ["boom"]}, {"rules": [1]}, {"host": "a\nb"}):
+        assert not quiet_ok(mini_state_view(_base(**extra))), extra
+
+
+def test_a_host_is_a_printable_bounded_label():
+    from utils.mini_state_view import mini_state_view
+    for bad in ("a\nb **x** | 🟢 fresh", "x" * 65, 5, [1]):
+        v = mini_state_view(_base(host=bad))
+        assert v["host"] is None and "host" in v["unreadable"], bad
+    assert mini_state_view(_base(host="moc-2.lan"))["host"] == "moc-2.lan"
+
+
+def test_counts_and_texts_are_bounded():
+    from utils.mini_state_view import MAX_TEXT, mini_state_view
+    v = mini_state_view(_base(error_count=1e308, rule_count=10 ** 300,
+                              source_errors=["e" * 20000]))
+    assert v["error_count"] is None and "rule_count" in v["unreadable"]
+    assert len(v["source_errors"][0]) <= MAX_TEXT
+
+
+def test_history_view_copies_rows():
+    from utils.mini_state_view import history_view
+    rows = [{"ts": "x"}]
+    history_view(rows)
+    assert rows == [{"ts": "x"}]
+
+
+# r3 I3: the audit certified HONEST/HEALTHY beside refused sections.
+@pytest.mark.parametrize("extra", [{"rules": "x"}, {"rules": [1]},
+                                   {"source_errors": {"a": 1}},
+                                   {"rule_count": float("nan")},
+                                   {"error_count": float("nan")},
+                                   {"error_count": True}, {"error_count": "3"}],
+                         ids=["rules_str", "rules_list", "se_dict", "rc_nan",
+                              "ec_nan", "ec_true", "ec_str"])
+def test_the_audit_never_passes_liveness_beside_an_unreadable_section(extra, tmp_path):
+    from mini_dudeai.audit import PASS, AuditContext, check_liveness
+    ctx = AuditContext(artifact_dir=tmp_path, now=NOW, state=_base(**extra))
+    r = check_liveness(ctx)
+    assert r.status != PASS and "unreadable" in r.detail, r
+    json.dumps(r.to_dict(), allow_nan=False)
+
+
+def test_the_audit_keeps_absent_error_count_as_none(tmp_path):
+    from mini_dudeai.audit import PASS, AuditContext, check_liveness
+    st = _base()
+    del st["error_count"]
+    r = check_liveness(AuditContext(artifact_dir=tmp_path, now=NOW, state=st))
+    assert r.status == PASS and r.data["error_count"] is None, r
+    assert "error_count=None" in r.detail, r
+
+
+def test_the_audit_outcome_check_reads_the_count_through_the_view(tmp_path):
+    from mini_dudeai.audit import AuditContext, check_outcome_truth
+    hist = [{"ts": NOW - 5, "transition": "edge_up", "outcome": {"ok": True}}]
+    for raw in (True, float("nan"), "3"):
+        r = check_outcome_truth(AuditContext(artifact_dir=tmp_path, now=NOW,
+                                             state=_base(error_count=raw),
+                                             history=hist))
+        assert "state_error_count" not in r.data, (raw, r.data)
+
+
+# /api/status + the ssh-spool path (status_blocks) — the raw reader r3 found.
+@pytest.mark.parametrize("extra", [{"rules": [1]}, {"rules": "x"},
+                                   {"error_count": float("nan")},
+                                   {"rule_count": float("nan"), "host": 5},
+                                   {"rules": {"a": {"rule_id": "a", "fire_count_24h": "x"},
+                                              "b": {"rule_id": "b", "fire_count_24h": 3}}},
+                                   {"rules": {"a": {"rule_id": [1], "subject": "s",
+                                                    "currently_active": True}}}],
+                         ids=["rules_list", "rules_str", "ec_nan", "rc_nan_host",
+                              "fc24_mixed", "rid_list"])
+def test_the_status_block_never_raises_or_echoes_non_finite(extra):
+    from utils.status_blocks import mini_block_from_payload
+    b = mini_block_from_payload(_base(**extra), now=NOW)
+    json.dumps(b, allow_nan=False)
+    assert b.get("unreadable"), b

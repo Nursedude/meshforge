@@ -222,12 +222,18 @@ def check_liveness(ctx: AuditContext) -> CheckResult:
              else repr(raw)[:40]},
         )
     age = ctx.now - last
+    # Absent stays None here (r3: the view's absent=0 changed this report's
+    # text/JSON from None to 0, and check_outcome_truth keeps None).
+    has_ec = "error_count" in ctx.state
+    ec_text = errors_label(view) if has_ec else "None"
     common = {
         "age_s": round(age, 1),
         "freshness_s": ctx.freshness_s,
         "fire_count": view["fire_count"],
-        "error_count": view["error_count"],
+        "error_count": view["error_count"] if has_ec else None,
     }
+    if view["unreadable"]:
+        common["unreadable"] = list(view["unreadable"])
     if age > ctx.freshness_s:
         return CheckResult(
             "liveness", DEGRADED,
@@ -241,10 +247,21 @@ def check_liveness(ctx: AuditContext) -> CheckResult:
             f"last_tick_ts is in the future by {-age:.0f}s — clock skew; "
             f"cannot certify freshness.", common,
         )
+    if view["unreadable"]:
+        # r3 I3: the audit certified HONEST/HEALTHY beside refused sections
+        # (rules:"x", error_count NaN). A state writer emitting sections no
+        # reader can read is mini NOT doing its job — DEGRADED, named.
+        return CheckResult(
+            "liveness", DEGRADED,
+            f"ticking (last tick {age:.0f}s ago) but the state carries "
+            f"unreadable section(s): {', '.join(view['unreadable'])} — "
+            f"conditions in them are invisible to every surface; state "
+            f"writer suspect.", common,
+        )
     return CheckResult(
         "liveness", PASS,
         f"ticking — last tick {age:.0f}s ago, "
-        f"fire_count={common['fire_count']} error_count={errors_label(view)}.",
+        f"fire_count={common['fire_count']} error_count={ec_text}.",
         common,
     )
 

@@ -131,6 +131,7 @@ class NocSnapshot:
     mini_error_count: Optional[int] = None
     mini_errors_unknown: bool = False
     mini_unreadable: List[str] = field(default_factory=list)
+    mini_source_errors: int = 0
     mini_reason: Optional[str] = None
 
     # fleet posture (optional; from an injected /api/status dict)
@@ -220,6 +221,8 @@ def _fill_mini(snap: NocSnapshot, path: Path) -> Optional[dict]:
     snap.mini_errors_unknown = view["error_count"] is None
     # present fields refused (rules:[1] …): the answer must never read quiet
     snap.mini_unreadable = list(view["unreadable"])
+    # named source errors (r3 P4: a 0 count beside a named error read quiet)
+    snap.mini_source_errors = len(view["source_errors"])
     snap.mini_ok = not stale and age is not None
     if age is None:
         snap.mini_reason = ("no finite last_tick_ts — freshness unobservable, "

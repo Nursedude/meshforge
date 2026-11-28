@@ -300,3 +300,96 @@ def test_the_tui_never_gives_a_clean_bill_beside_an_unreadable_field(tmp_path):
     finally:
         h._mini_paths = orig
     assert shown and "✓" not in shown[0] and "NOT a clean bill" in shown[0], shown
+
+
+# ---- r3 (Fable BY RUNNING, 11-27): rows + payloads, every MF reader ------
+_ROW_BAD = [{"rule_id": [1]}, {"subject": {"a": 1}}, {"rule_id": float("nan")},
+            {"currently_active": "yes"}, {"last_detail": [1]}]
+
+
+def _esc_hist(**esc_extra):
+    row = _esc_row(NOW - 60)
+    row["outcome"]["extras"]["escalation"].update(esc_extra)
+    return [row]
+
+
+@pytest.mark.parametrize("reader", [f for _, f in _READERS], ids=_RIDS)
+@pytest.mark.parametrize("extra", _ROW_BAD,
+                         ids=["rid_list", "subj_dict", "rid_nan", "active_str",
+                              "detail_list"])
+def test_no_reader_raises_on_a_hostile_rule_row(reader, extra, tmp_path):
+    rules = {"r": {"rule_id": "r1", "subject": "s1", "currently_active": True,
+                   "last_detail": "d", **extra}}
+    out = reader(_base(rules=rules), _hist(), tmp_path)
+    assert "nan · nan" not in out.lower(), out
+
+
+@pytest.mark.parametrize("reader", [f for _, f in _READERS], ids=_RIDS)
+@pytest.mark.parametrize("extra", [{"rule": [1]}, {"subject": {"a": 1}},
+                                   {"detail": [1]}],
+                         ids=["rule_list", "subj_dict", "detail_list"])
+def test_no_reader_raises_on_a_hostile_escalation_payload(reader, extra, tmp_path):
+    assert isinstance(reader(_base(), _esc_hist(**extra), tmp_path), str)
+
+
+@pytest.mark.parametrize("extra", [{"error_count": 2},
+                                   {"error_count": 0, "source_errors": ["boom"]},
+                                   {"rules": None, "rule_count": 7}],
+                         ids=["known_errors", "named_source_error", "count_no_rules"])
+def test_no_surface_reads_quiet_beside_a_known_error(extra, tmp_path):
+    st = _base(rules={}, **extra) if "rules" not in extra else _base(**extra)
+    oracle = _oracle(st, [], tmp_path)
+    assert "all quiet" not in oracle and "0act" not in oracle, oracle
+    assert "Quiet" not in _brief(st, [], tmp_path)
+
+
+def test_the_pane_shows_named_source_errors_whatever_the_count(tmp_path):
+    for ec in (0, None, float("nan")):
+        extra = {"source_errors": ["boom"]}
+        if ec is not None:
+            extra["error_count"] = ec
+        out = _pane(_base(**extra), [], tmp_path)
+        line = next(ln for ln in out.splitlines() if "**moc**" in ln)
+        assert "boom" in line, (ec, line)
+
+
+def test_the_oracle_never_names_the_box_off_a_hostile_host(tmp_path):
+    from oracle.snapshot import read_snapshot
+    (tmp_path / "mini_dudeai_state.json").write_text(
+        json.dumps(_base(host=5)), encoding="utf-8")
+    snap = read_snapshot(home=tmp_path, watchdog_path=tmp_path / "no.json",
+                         status={}, nodes={}, now=NOW)
+    assert snap.box != 5
+
+
+@pytest.mark.parametrize("v", ["x", float("nan"), 0, False],
+                         ids=["str", "nan", "zero", "false"])
+def test_the_tui_says_unknown_for_a_present_unreadable_tick(v):
+    from handlers.mini_dudeai import _posture
+    line = _posture(_base(last_tick_ts=v), NOW)
+    assert "UNKNOWN" in line and "never ticked" not in line, line
+
+
+def test_the_tui_clean_bill_needs_a_known_zero_error_count(tmp_path):
+    import time
+    from handlers import mini_dudeai as h
+    for extra in ({"error_count": 2}, {"source_errors": ["boom"]}):
+        st = _base(rules={}, last_tick_ts=time.time() - 5, **extra)
+        shown = []
+        ctx = type("C", (), {})()
+        ctx.dialog = type("D", (), {"msgbox": lambda self, t, m: shown.append(m)})()
+        handler = h.MiniDudeaiHandler.__new__(h.MiniDudeaiHandler)
+        handler.ctx = ctx
+        sp = tmp_path / "s.json"
+        sp.write_text(json.dumps(st), encoding="utf-8")
+        orig = h._mini_paths
+        h._mini_paths = lambda: (sp, tmp_path / "h.jsonl")
+        try:
+            h.MiniDudeaiHandler._render(handler)
+        finally:
+            h._mini_paths = orig
+        assert shown and "✓" not in shown[0], (extra, shown)
+
+
+
+# status_blocks (/api/status) is pinned in the twin-locked tests/test_mini_state_view.py.

@@ -230,7 +230,7 @@ class MiniDudeaiHandler(BaseHandler):
                 # An empty list from a watcher that is not ticking — or ticked
                 # blind — is not a clean bill (TUI audit finding 5): the ✓ used
                 # to show under a 🔴 STALE header.
-                from utils.mini_state_view import mini_state_view
+                from utils.mini_state_view import mini_state_view, quiet_ok
                 view = mini_state_view(state)
                 errs = view["error_count"]
                 if not _is_fresh(state, now):
@@ -238,16 +238,20 @@ class MiniDudeaiHandler(BaseHandler):
                                "fresh, so this is NOT a clean bill of health "
                                "(unobservable ≠ healthy).")
                 elif view["unreadable"]:
+                    # covers an unknown error count too ("error_count")
                     verdict = ("No findings shown — but part of the state "
                                "could not be read ("
                                + ", ".join(view["unreadable"])
                                + "): NOT a clean bill.")
-                elif errs is None:
-                    verdict = ("No findings — but this tick's source-error "
-                               "count is unreadable: NOT a clean bill.")
                 elif errs:
                     verdict = (f"No findings — but {errs} source error(s) this "
                                f"tick: partly blind, not a clean bill.")
+                elif not quiet_ok(view):
+                    # r3 P4: a named source error beside a 0 count read ✓
+                    verdict = ("No findings — but a source reported an error "
+                               "this tick ("
+                               + "; ".join(view["source_errors"][:3])
+                               + "): partly blind, not a clean bill.")
                 else:
                     verdict = "Nothing actionable right now ✓"
                 self.ctx.dialog.msgbox("mini-dudeai", f"{header}\n\n{verdict}")

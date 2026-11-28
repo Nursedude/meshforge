@@ -19,8 +19,8 @@ import os
 import re
 
 from utils.finite_stamp import finite
-from utils.mini_state_view import (errors_label, history_view, mini_state_view,
-                                   unreadable_note)
+from utils.mini_state_view import (errors_label, escalation_view, history_view,
+                                   mini_state_view, quiet_ok, unreadable_note)
 
 from ._util import APP_MINI_UNIT, atomic_write_text, read_json
 
@@ -54,7 +54,9 @@ def _escalation_of(h: dict) -> dict | None:
     extras = out.get("extras")
     esc = (extras.get("escalation") if isinstance(extras, dict) else None) \
         or out.get("escalation")
-    return esc if isinstance(esc, dict) else None
+    # r3 I1: the PAYLOAD through the seam too — a list `rule` raised in the
+    # last-seen index below (the brief froze behind a FRESH banner)
+    return escalation_view(esc)
 
 
 def recent_escalations(history: list[dict], now_ts: float,
@@ -483,7 +485,7 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     escalations = [esc for _ts, esc in esc_pairs]
     # Keyed on the SAME tuple recent_escalations dedups by, so the lookup is
     # exact rather than positional — used to date the resolved lines below.
-    _last_seen = {(esc.get("rule"), esc.get("subject"),
+    _last_seen = {(_hk(esc.get("rule")), _hk(esc.get("subject")),
                    str(esc.get("detail", ""))): ts for ts, esc in esc_pairs}
     esc_active, esc_resolved = _split_escalations_by_activity(escalations, rules)
     if esc_active:
@@ -506,7 +508,7 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
         lines.append("_Text below is each condition's last ACTIVE detail — "
                      "history, not current state._")
         for esc in esc_resolved[-4:]:
-            key = (esc.get("rule"), esc.get("subject"),
+            key = (_hk(esc.get("rule")), _hk(esc.get("subject")),
                    str(esc.get("detail", "")))
             lines.append(f"- {esc.get('rule')} · {esc.get('subject')} · "
                          f"was (last seen {_age(now_ts, _last_seen.get(key))} ago): "
@@ -524,7 +526,7 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
                          f"{h.get('subject')} · {str(h.get('detail',''))[:90]}")
 
     if (not active and not escalations and not ups and not pending_deltas
-            and last_tick and not stale and not view["unreadable"]):
+            and last_tick and not stale and quiet_ok(view)):
         lines.append("\n_Quiet: no active conditions, no escalations, no fires in window. "
                      "Nothing demands attention._")
 

@@ -250,6 +250,9 @@ def _mini_short(snap: NocSnapshot) -> str:
         return "mini:?state"
     if snap.mini_error_count:
         return f"mini:err{snap.mini_error_count}"
+    if snap.mini_source_errors:
+        # a named source error beside a 0 count (r3 P4): never "0act"
+        return f"mini:srcerr{snap.mini_source_errors}"
     return f"mini:{len(snap.mini_active)}act"
 
 
@@ -268,6 +271,12 @@ def _blind_notes(snap: NocSnapshot) -> List[str]:
     unread = [f for f in snap.mini_unreadable if f != "error_count"]
     if snap.mini_installed and unread:
         notes.append("mini state unreadable: " + ",".join(unread))
+    # r3 P3/P4: a KNOWN error count, or a named source error, read "all
+    # quiet" while an unknown count read loud — partly blind is never quiet
+    if snap.mini_installed and snap.mini_error_count:
+        notes.append(f"mini src-errors {snap.mini_error_count}")
+    elif snap.mini_installed and snap.mini_source_errors:
+        notes.append("mini src-error named")
     return notes
 
 

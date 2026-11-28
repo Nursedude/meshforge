@@ -17,6 +17,7 @@ import time
 from typing import Any, Dict, Iterable, Optional
 
 from utils.finite_stamp import finite  # the ONE finite-stamp rule (P2, 11-27)
+from utils.mini_state_view import mini_state_view  # the ONE state reader (P3 r3)
 
 
 WATCHDOG_STALE_S = 300.0  # 5 min — 10x the watchdog's 30s tick
@@ -143,18 +144,22 @@ def mini_block_from_payload(
     no_ts = age_s is None
     stale = bool(age_s is not None and age_s > stale_after_s)
 
-    rules = payload.get("rules") or {}
+    # The ONE mini state reader (P3 seam r3, 11-27): `rules:[1]` raised out
+    # of /api/status and the ssh-spool path; mixed `fire_count_24h` types
+    # raised the sort; `error_count` NaN was echoed (NaN is not JSON).
+    view = mini_state_view(payload)
+    rules = view["rules"]
     active = [
         {"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
          "detail": rs.get("last_detail", "")}
         for rs in rules.values()
-        if isinstance(rs, dict) and rs.get("currently_active")
+        if rs.get("currently_active")
     ]
     top = sorted(
         ({"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
           "fire_count_24h": rs.get("fire_count_24h", 0)}
          for rs in rules.values()
-         if isinstance(rs, dict) and rs.get("fire_count_24h")),
+         if rs.get("fire_count_24h")),
         key=lambda r: r["fire_count_24h"], reverse=True,
     )[:5]
 
@@ -162,14 +167,19 @@ def mini_block_from_payload(
         "installed": True,
         "ok": not stale and not no_ts and not future,
         "ts": payload.get("last_tick_ts") if ts is not None else None,
-        "last_tick_iso": payload.get("last_tick_iso"),
+        "last_tick_iso": (payload.get("last_tick_iso")
+                          if isinstance(payload.get("last_tick_iso"), str) else None),
         "age_s": age_s,
-        "host": payload.get("host"),
-        "rule_count": payload.get("rule_count"),
-        "error_count": payload.get("error_count"),
+        "host": view["host"],
+        # absent stays None (unknown never reads 0); garbage -> None
+        "rule_count": view["rule_count"] if "rule_count" in payload else None,
+        "error_count": view["error_count"] if "error_count" in payload else None,
         "active_rules": active,
         "top_rules_24h": top,
     }
+    if view["unreadable"]:
+        # witnessed, never absorbed — the consumer can name the blind part
+        block["unreadable"] = list(view["unreadable"])
     if no_ts:
         block["reason"] = (
             "no_tick_timestamp: state lacks a finite numeric last_tick_ts — "

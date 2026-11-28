@@ -788,7 +788,9 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         # than as one of ours (or, before today, as absent).
         if p.get("state_app"):
             head += f" · 🔀 {p['state_app']} mini"
-        if p.get("src_errors") != 0 and p.get("source_errors"):
+        # named errors show whatever the count says (r3 P4: a 0 count hid
+        # them; R06: an unknown count must not either)
+        if p.get("source_errors"):
             head += f" ({'; '.join(str(e) for e in p['source_errors'])})"
         head += unreadable_note(p)
         pd = p.get("pending_deltas")
