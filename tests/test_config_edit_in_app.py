@@ -35,7 +35,7 @@ def test_edit_saves_writable_file_atomically(tmp_path, monkeypatch):
     ctx = _ctx()
     ctx.dialog.editbox.return_value = "old = 2"  # user edited (strip is fine)
     written = {}
-    monkeypatch.setattr("utils.paths.atomic_write_text",
+    monkeypatch.setattr("utils.paths.atomic_write_text_preserving",
                         lambda p, c: written.update(path=str(p), content=c))
     # A real tmp file is W_OK, so the atomic path is taken (no sudo).
     monkeypatch.setattr(config_edit.os, "access", lambda p, m: True)
@@ -60,7 +60,7 @@ def test_edit_uses_sudo_for_unwritable_file(tmp_path, monkeypatch):
                         lambda path, content, **k: (
                             sudo.update(path=path, content=content) or (True, "ok")))
     # atomic path must NOT be taken
-    monkeypatch.setattr("utils.paths.atomic_write_text",
+    monkeypatch.setattr("utils.paths.atomic_write_text_preserving",
                         lambda p, c: pytest.fail("atomic used for unwritable file"))
 
     result = config_edit.edit_config_in_app(ctx, f)
@@ -75,7 +75,7 @@ def test_cancel_returns_none_and_writes_nothing(tmp_path, monkeypatch):
     f.write_text("x\n")
     ctx = _ctx()
     ctx.dialog.editbox.return_value = None  # operator cancelled
-    monkeypatch.setattr("utils.paths.atomic_write_text",
+    monkeypatch.setattr("utils.paths.atomic_write_text_preserving",
                         lambda p, c: pytest.fail("wrote on cancel"))
     monkeypatch.setattr(config_edit.os, "access", lambda p, m: True)
 
@@ -88,7 +88,7 @@ def test_no_change_returns_none_and_writes_nothing(tmp_path, monkeypatch):
     f.write_text("same = 1\n")
     ctx = _ctx()
     ctx.dialog.editbox.return_value = "same = 1"  # identical modulo newline
-    monkeypatch.setattr("utils.paths.atomic_write_text",
+    monkeypatch.setattr("utils.paths.atomic_write_text_preserving",
                         lambda p, c: pytest.fail("wrote on no-op edit"))
     monkeypatch.setattr(config_edit.os, "access", lambda p, m: True)
 
@@ -112,7 +112,7 @@ def test_write_failure_returns_false(tmp_path, monkeypatch):
 
     def _boom(p, c):
         raise OSError("disk full")
-    monkeypatch.setattr("utils.paths.atomic_write_text", _boom)
+    monkeypatch.setattr("utils.paths.atomic_write_text_preserving", _boom)
 
     result = config_edit.edit_config_in_app(ctx, f)
     assert result is False
@@ -308,7 +308,7 @@ def test_unavailable_editor_install_then_edit(tmp_path, monkeypatch):
                         lambda pkg, **k: called.append(pkg) or (True, "ok"))
     monkeypatch.setattr(config_edit.os, "access", lambda p, m: True)
     written = {}
-    monkeypatch.setattr("utils.paths.atomic_write_text",
+    monkeypatch.setattr("utils.paths.atomic_write_text_preserving",
                         lambda p, c: written.update(content=c))
     assert config_edit.edit_config_in_app(ctx, f) is True
     assert called == ["dialog"]
@@ -428,3 +428,31 @@ def test_run_reads_the_capture_as_utf8_explicitly(monkeypatch):
     b._run(["--editbox", "/x", "10", "40"], tool="dialog", strip=False)
     assert reads and reads[-1].get("encoding") == "utf-8"
     assert reads[-1].get("errors") == "replace"
+
+
+# --- BIC-2 slice 2 r8 F1: an in-app save keeps the file's mode + symlink ----
+
+def _save_real(tmp_path, monkeypatch, target, new_body):
+    ctx = _ctx()
+    ctx.dialog.editbox.return_value = new_body
+    monkeypatch.setattr(config_edit.os, "access", lambda p, m: True)
+    return config_edit.edit_config_in_app(ctx, target, title="Edit X")
+
+
+def test_r8_f1_save_keeps_a_shared_files_mode(tmp_path, monkeypatch):
+    f = tmp_path / "global.ini"
+    f.write_text("[mqtt]\nbroker = x\n")
+    f.chmod(0o644)
+    assert _save_real(tmp_path, monkeypatch, f, "[mqtt]\nbroker = y") is True
+    assert (f.stat().st_mode & 0o777) == 0o644
+    assert "broker = y" in f.read_text()
+
+
+def test_r8_f1_save_writes_a_symlink_through(tmp_path, monkeypatch):
+    real = tmp_path / "real.ini"
+    real.write_text("[meshtastic]\nown_node_id =\n")
+    link = tmp_path / "global.ini"
+    link.symlink_to(real)
+    assert _save_real(tmp_path, monkeypatch, link, "[meshtastic]\nown_node_id = !6201ce25") is True
+    assert link.is_symlink()
+    assert "!6201ce25" in real.read_text()

@@ -116,8 +116,13 @@ def edit_config_in_app(ctx, path, *, title: Optional[str] = None) -> Optional[bo
     # signal — root sees W_OK on /etc, a non-root viewer does not (-> sudo).
     if os.access(str(p), os.W_OK):
         try:
-            from utils.paths import atomic_write_text
-            atomic_write_text(p, edited)
+            # BIC-2 slice 2 r8 F1: KEEP the file's owner + mode and write a
+            # symlink THROUGH -- a plain atomic_write_text replaced a shared
+            # 0644 file with a writer-owned 0600 one (root under the sudo
+            # TUI) and swapped a symlink for a regular file. ONE writer rule
+            # for every in-app edit.
+            from utils.paths import atomic_write_text_preserving
+            atomic_write_text_preserving(p, edited)
             ok, msg = True, f"Saved {p}"
         except OSError as e:
             ok, msg = False, f"Could not write {p}:\n{e}"

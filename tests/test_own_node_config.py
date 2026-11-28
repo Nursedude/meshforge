@@ -528,3 +528,59 @@ class TestR3BomSymmetry:
         p.write_bytes(b"\xef\xbb\xbf[mqtt]\nbroker = b\n")
         global_config.ensure_own_node_id_section(p)
         assert "[meshtastic]" in p.read_text(encoding="utf-8-sig")
+
+
+# ── r8 F1: the Own Radio ID screen end to end through the editor's SAVE ─────
+# (the reviewer's drill, kept: ensure-section was pinned, the save was not)
+
+class _OwnIdDialog:
+    def __init__(self, fn):
+        self.said, self.fn = [], fn
+
+    def msgbox(self, title, text):
+        self.said.append(text)
+
+    def yesno(self, *a, **k):
+        return True
+
+    def editbox(self, title, path):
+        return self.fn(open(path, encoding="utf-8").read())
+
+
+def _own_id_screen(monkeypatch, path):
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "launcher_tui"))
+    from handlers import messaging as hm
+    from launcher_tui import config_edit
+    from utils import global_config
+    monkeypatch.setattr(global_config, "global_config_path", lambda: path)
+    monkeypatch.setattr(own_radio, "_read_config", lambda: global_config.read_own_node_id(path))
+    monkeypatch.setattr(config_edit.os, "access", lambda p, m: True)
+    d = _OwnIdDialog(lambda s: s.replace("own_node_id =", "own_node_id = !6201ce25"))
+    h = hm.MessagingHandler.__new__(hm.MessagingHandler)
+    h.ctx = SimpleNamespace(dialog=d, report_action=lambda ok, *a, **k: None)
+    h._messaging_own_id()
+    return d
+
+
+class TestOwnIdScreenSave:
+    def test_r8_f1_the_save_keeps_a_shared_files_mode(self, monkeypatch, tmp_path):
+        from utils import global_config
+        p = tmp_path / "global.ini"
+        p.write_text("[mqtt]\nbroker = example.invalid\n")
+        p.chmod(0o644)
+        _own_id_screen(monkeypatch, p)
+        assert global_config.read_own_node_id(p)["state"] == "ok"
+        assert (p.stat().st_mode & 0o777) == 0o644
+        assert "broker = example.invalid" in p.read_text()
+
+    def test_r8_f1_the_save_writes_a_symlink_through(self, monkeypatch, tmp_path):
+        real = tmp_path / "shared" / "global.ini"
+        real.parent.mkdir()
+        real.write_text("[mqtt]\nbroker = example.invalid\n")
+        link = tmp_path / "global.ini"
+        link.symlink_to(real)
+        _own_id_screen(monkeypatch, link)
+        assert link.is_symlink() and "6201ce25" in real.read_text()
