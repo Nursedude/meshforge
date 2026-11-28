@@ -61,6 +61,9 @@ from utils.finite_stamp import finite
 MAX_COUNT = 10 ** 9
 MAX_TEXT = 200
 MAX_HOST = 64
+#: An int id keeps its EXACT text up to here (~3900 digits, under CPython's
+#: 4300-digit str() limit); past it, a bounded sign+bits+crc form (r5 I2).
+_INT_TEXT_BITS = 13000
 
 
 def _count(v: Any) -> Optional[int]:
@@ -77,9 +80,12 @@ def _bounded_repr(v: Any) -> str:
     escalation to Resolved). Long forms keep head + length, never just a
     prefix, so two values differing late still differ."""
     if isinstance(v, int) and not isinstance(v, bool):
-        # str()/repr() of a huge int RAISE past the int-digits limit; bits +
-        # low word are distinct enough and never raise
-        return f"<int:{v.bit_length()}bits:{v & 0xffffffff:08x}>"
+        # only reached past _INT_TEXT_BITS (str() would RAISE on the digits
+        # limit). r5 I2: bits + low word collided (no sign, middle bits
+        # ignored) — sign + bits + a crc over ALL the bytes.
+        mag = abs(v)
+        crc = zlib.crc32(mag.to_bytes((mag.bit_length() + 7) // 8, "big"))
+        return f"<int:{'-' if v < 0 else ''}{mag.bit_length()}bits:{crc:08x}>"
     try:
         s = json.dumps(v, sort_keys=True, default=_safe_repr)
     except (ValueError, TypeError, OverflowError, RecursionError):
@@ -111,7 +117,7 @@ def _ident(v: Any) -> Optional[str]:
         return v
     if isinstance(v, bool):
         return str(v)
-    if isinstance(v, int) and abs(v) <= MAX_COUNT:
+    if isinstance(v, int) and v.bit_length() <= _INT_TEXT_BITS:
         return str(v)
     if isinstance(v, float) and finite(v) is not None:
         return repr(v)
@@ -129,7 +135,7 @@ def _text(v: Any) -> str:
         return v
     if isinstance(v, bool):
         return str(v)
-    if isinstance(v, int) and abs(v) <= MAX_COUNT:
+    if isinstance(v, int) and v.bit_length() <= _INT_TEXT_BITS:
         return str(v)
     if isinstance(v, float) and finite(v) is not None:
         return repr(v)
@@ -261,6 +267,10 @@ def mini_state_view(state: Any) -> dict:
         "last_tick": last_tick,
         "rules": rules,
         "rules_unreadable": rules_unreadable,
+        # the WHOLE rules section could not be read (not an object, or a
+        # count with no section) — the one refusal that blinds a box's
+        # conditions entirely (r5 I1: status_blocks goes DARK only on this)
+        "rules_section_unreadable": bool(rules_unreadable or rules_missing),
         "rules_dropped": rules_dropped,
         "rule_count": rule_count,
         "error_count": error_count,

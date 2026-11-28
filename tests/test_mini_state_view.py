@@ -466,19 +466,82 @@ def test_a_colliding_garbage_id_never_hides_a_live_escalation():
     assert "LIVE-OTHER" in look.split("Recently resolved")[0], out
 
 
-# I2: fleet truth classified an unreadable mini block HEALTHY (no consumer of
-# the `unreadable` key). Unreadable = not ok, reason names it UNOBSERVABLE
-# (fleet_truth maps that to DARK — could not see, not a fault).
-@pytest.mark.parametrize("extra", [{"rules": [1]}, {"rules": None, "rule_count": 7},
-                                   {"error_count": float("nan")}, {"host": "a\nb"}],
-                         ids=["rules_list", "count_no_rules", "ec_nan", "host_nl"])
-def test_an_unreadable_mini_block_is_never_healthy_in_fleet_truth(extra):
+# r4 I2: fleet truth classified a box whose RULES could not be read HEALTHY.
+# A rules section that is not an object (or a count with no section) = not
+# ok + UNOBSERVABLE reason -> DARK: that box's conditions cannot be seen.
+@pytest.mark.parametrize("extra", [{"rules": [1]}, {"rules": "x"},
+                                   {"rules": None, "rule_count": 7}],
+                         ids=["rules_list", "rules_str", "count_no_rules"])
+def test_an_unreadable_rules_section_is_dark_in_fleet_truth(extra):
     from utils.fleet_truth import HEALTHY, classify_block
     from utils.status_blocks import mini_block_from_payload
     b = mini_block_from_payload(_base(**extra), now=NOW)
     assert b["ok"] is False and "unobservable" in b["reason"], b
+    assert "rules" in b["reason"], b
     cell = classify_block(b, source="mini")
     assert cell["state"] != HEALTHY, cell
+
+
+# r5 I1 (option A, operator 11-27): ANY refusal went DARK, and fleet truth
+# drops escalations on an unobservable reason — so a FULLY READ live rule
+# vanished from the fleet feed ("no active escalations") over a bad host.
+# Only an unreadable rules SECTION is dark; every other refusal keeps the
+# readable rows flowing, with the `unreadable` key as the witness.
+_LIVE_RULE = {"b|t": {"rule_id": "b", "subject": "t", "currently_active": True,
+                      "last_detail": "LIVE-CONDITION"}}
+
+
+@pytest.mark.parametrize("extra", [{"host": "a\nb"}, {"host": "h" * 65},
+                                   {"rule_count": "x"}, {"error_count": float("nan")},
+                                   {"source_errors": {"a": 1}},
+                                   {"rules": {**_LIVE_RULE, "a": 1}},
+                                   {"rules": {**_LIVE_RULE,
+                                              "c": {"rule_id": "c", "fire_count_24h": "x"}}},
+                                   {"rules": {"b|t": {**_LIVE_RULE["b|t"],
+                                                      "currently_active": 1}}}],
+                         ids=["host_nl", "host_long", "rc_str", "ec_nan", "se_dict",
+                              "garbage_sibling", "fc24_sibling", "active_int"])
+def test_a_refusal_never_hides_a_fully_read_live_rule_from_the_fleet(extra):
+    from utils.fleet_truth import _extract_escalations
+    from utils.status_blocks import mini_block_from_payload
+    st = _base(rules=dict(_LIVE_RULE))
+    st.update(extra)
+    b = mini_block_from_payload(st, now=NOW)
+    assert b["ok"] is True and b.get("unreadable"), b
+    esc = _extract_escalations(b)
+    assert [e["rule_id"] for e in esc] == ["b"], (b, esc)
+
+
+# r5 I2: bit length + low word was NOT distinct (2**40 vs -2**40, values
+# differing in the middle). Any int keeps its exact text; only an int past
+# Python's str-digits limit gets a bounded form — sign, bits AND a crc.
+@pytest.mark.parametrize("a,b", [(2 ** 40, -(2 ** 40)), (2 ** 40 + 1, 2 ** 40 + 2 ** 32 + 1),
+                                 (2 ** 63, 2 ** 63 + 2 ** 40),
+                                 (0xAAAABBBBCCCCDDDD, 0xAAAA0000CCCCDDDD),
+                                 (10 ** 400, 10 ** 400 + 2 ** 32),
+                                 (10 ** 5000, 10 ** 5000 + 2 ** 4000),
+                                 (10 ** 5000, -(10 ** 5000))],
+                         ids=["sign", "mid_word", "high_bits", "middle", "1e400",
+                              "huge_mid", "huge_sign"])
+def test_big_int_ids_stay_distinct(a, b):
+    from utils.mini_state_view import _ident, _text
+    assert _ident(a) != _ident(b) and _text(a) != _text(b)
+
+
+def test_an_int_id_keeps_its_exact_text():
+    from utils.mini_state_view import _ident
+    assert _ident(3735928559) == "3735928559"
+    assert _ident(-2 ** 40) == str(-2 ** 40)
+
+
+def test_a_big_int_subject_never_demotes_a_live_escalation():
+    from mini_dudeai.brief import build_brief
+    rules = {"r": {"rule_id": "r", "subject": 0xAAAA0000CCCCDDDD,
+                   "currently_active": False}}
+    out = build_brief(_base(rules=rules), _hostile_esc_rows(
+        {"rule": "r", "subject": 0xAAAABBBBCCCCDDDD, "detail": "LIVE-OTHER"}), NOW)
+    look = out.split("Look here first")[1] if "Look here first" in out else ""
+    assert "LIVE-OTHER" in look.split("Recently resolved")[0], out
 
 
 def test_a_healthy_long_detail_block_stays_healthy_in_fleet_truth():
