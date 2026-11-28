@@ -552,3 +552,71 @@ def test_a_healthy_long_detail_block_stays_healthy_in_fleet_truth():
     assert b["ok"] is True and "unreadable" not in b, b
     assert classify_block(b, source="mini")["state"] == HEALTHY
     assert b["active_rules"][0]["detail"] == _LONG
+
+
+# ---- r6 (Fable BY RUNNING, 11-27) ----------------------------------------
+# F1: a rules DICT with zero readable rows (all garbage / null / list-wrapped
+# / double-encoded) read HEALTHY with 0 escalations in fleet truth — r4 I2
+# with `{}` for `[]`. Zero readable rows + >=1 refused = the section is
+# unreadable. F2: rules absent beside a GARBAGE count = a count with no
+# section, too. Legitimate: `{}` with any readable count (rows are per
+# rule|subject; rule_count = len(ruleset)).
+@pytest.mark.parametrize("rules,rc", [({"a": 1, "b": "x"}, 2), ({"a": None, "b": None}, 2),
+                                      ({"a": [{"rule_id": "a"}]}, 1),
+                                      ({"a": '{"rule_id": "a"}'}, 1),
+                                      ({f"r{i}": i for i in range(8)}, 8),
+                                      (None, 1), (None, "5"), (None, float("nan")),
+                                      (None, -3)],
+                         ids=["int_str", "nulls", "list_wrapped", "double_encoded",
+                              "eight_ints", "rc1_no_section", "rc_str_no_section",
+                              "rc_nan_no_section", "rc_neg_no_section"])
+def test_a_rules_section_with_nothing_readable_is_dark(rules, rc):
+    from utils.fleet_truth import HEALTHY, classify_block
+    from utils.mini_state_view import mini_state_view
+    from utils.status_blocks import mini_block_from_payload
+    st = _base(rules=rules, rule_count=rc)
+    assert mini_state_view(st)["rules_section_unreadable"] is True
+    b = mini_block_from_payload(st, now=NOW)
+    assert b["ok"] is False and b["reason"].startswith("unreadable_state:"), b
+    assert classify_block(b, source="mini")["state"] != HEALTHY
+
+
+@pytest.mark.parametrize("rules,rc", [({}, 0), ({}, 5), ({}, None)],
+                         ids=["empty_rc0", "empty_rc5", "empty_no_rc"])
+def test_an_empty_rules_dict_is_legitimate(rules, rc):
+    from utils.mini_state_view import mini_state_view
+    from utils.status_blocks import mini_block_from_payload
+    st = _base(rules=rules)
+    if rc is not None:
+        st["rule_count"] = rc
+    assert mini_state_view(st)["rules_section_unreadable"] is False
+    assert mini_block_from_payload(st, now=NOW)["ok"] is True
+
+
+def test_rules_absent_and_no_count_is_an_old_daemon_not_unreadable():
+    from utils.mini_state_view import mini_state_view
+    st = {k: v for k, v in _base().items() if k != "rules"}
+    assert mini_state_view(st)["rules_section_unreadable"] is False
+
+
+def test_the_block_rule_count_is_none_when_the_writer_count_is_garbage():
+    """F2: the block emitted len(rules) for a garbage count — a healthy-
+    shaped number off an unreadable field."""
+    from utils.status_blocks import mini_block_from_payload
+    for rc in ("x", float("nan"), -3):
+        assert mini_block_from_payload(_base(rule_count=rc), now=NOW)["rule_count"] is None
+    assert mini_block_from_payload(_base(rule_count=7), now=NOW)["rule_count"] == 7
+
+
+# I01/I06/I03/I17/I16/I20: exact int text pinned at the boundary, both helpers.
+@pytest.mark.parametrize("v", [2 ** 64, -(2 ** 64), 2 ** 12999, 2 ** 13000 - 1],
+                         ids=["2^64", "-2^64", "2^12999", "2^13000-1"])
+def test_ints_up_to_the_boundary_keep_exact_text(v):
+    from utils.mini_state_view import _ident, _text
+    assert _ident(v) == str(v) and _text(v) == str(v)
+
+
+def test_past_the_boundary_the_bounded_form_keeps_sign_and_bits():
+    from utils.mini_state_view import _ident, _text
+    assert _ident(2 ** 13000).startswith("<int:13001bits:")
+    assert _text(-(2 ** 13000)).startswith("<int:-13001bits:")

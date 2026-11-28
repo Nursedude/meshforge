@@ -172,7 +172,7 @@ def mini_block_from_payload(
         "age_s": age_s,
         "host": view["host"],
         # absent stays None (unknown never reads 0); garbage -> None
-        "rule_count": view["rule_count"] if "rule_count" in payload else None,
+        "rule_count": view["rule_count_reported"],
         "error_count": view["error_count"] if "error_count" in payload else None,
         "active_rules": active,
         "top_rules_24h": top,

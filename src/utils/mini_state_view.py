@@ -223,7 +223,14 @@ def mini_state_view(state: Any) -> dict:
     # r3 I4: the writer COUNTS rules but no section came with them (null /
     # absent rules beside rule_count 7) — every surface read quiet. A count
     # with nothing to count is a section the view could not read.
-    rules_missing = (raw_rules is None and rc is not None and rc > 0)
+    # r6 F2: a GARBAGE count with no section is a count too (it said
+    # something, nothing came) — only an absent/null count is an old daemon.
+    raw_rc = s.get("rule_count")
+    rules_missing = (raw_rules is None and raw_rc is not None
+                     and (rc is None or rc > 0))
+    # r6 F1: a dict with ZERO readable rows and >=1 refused is as blind as
+    # a list (`{"a": 1}` read HEALTHY with 0 escalations — r4 I2 with `{}`).
+    rules_all_refused = isinstance(raw_rules, dict) and not rules and rules_dropped > 0
 
     if "error_count" not in s:
         error_count: Optional[int] = 0
@@ -270,7 +277,11 @@ def mini_state_view(state: Any) -> dict:
         # the WHOLE rules section could not be read (not an object, or a
         # count with no section) — the one refusal that blinds a box's
         # conditions entirely (r5 I1: status_blocks goes DARK only on this)
-        "rules_section_unreadable": bool(rules_unreadable or rules_missing),
+        "rules_section_unreadable": bool(rules_unreadable or rules_missing
+                                         or rules_all_refused),
+        # the writer's own count when readable, else None (r6 F2: the block
+        # emitted len(rules) — a healthy-shaped number off a garbage field)
+        "rule_count_reported": rc,
         "rules_dropped": rules_dropped,
         "rule_count": rule_count,
         "error_count": error_count,
